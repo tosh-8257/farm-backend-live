@@ -303,11 +303,21 @@ export class KycService {
   }
 
   async getMyKyc(userId: string) {
-    const docs = await this.prisma.kyc_documents.findMany({
-      where: { user_id: userId },
-      orderBy: { created_at: 'desc' },
+    // KYC status is driven by Didit decisions and stored on users.kyc_status.
+    // Legacy manual submissions are no longer returned here so the app does
+    // not show stale manual rejection feedback; admins can still read them
+    // through the KYC queue/admin endpoints.
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      select: { kyc_status: true },
     });
-    return { data: docs };
+    const status = user?.kyc_status ?? 'none';
+    return {
+      data: [],
+      kyc_status: status,
+      provider: 'didit',
+      can_start_verification: status !== 'verified',
+    };
   }
 
   async getQueue(query: any) {

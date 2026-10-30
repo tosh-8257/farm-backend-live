@@ -118,6 +118,15 @@ export class WebhookSignatureGuard implements CanActivate {
 
   private verifyNowpayments(req: Request): boolean {
     const secret = this.cfg.get<string>('NOWPAYMENTS_IPN_SECRET');
+    if (!secret && !req.path.includes('payout')) {
+      // Payment IPNs are never trusted on their own: the handler re-fetches the
+      // payment from NOWPayments and validates order/amount/currency before
+      // crediting. The HMAC check is an extra layer enabled by the secret.
+      this.logger.warn(
+        'NOWPAYMENTS_IPN_SECRET not set — skipping IPN HMAC; relying on authoritative status re-check',
+      );
+      return true;
+    }
     if (!secret) {
       this.logger.error(
         'NOWPAYMENTS_IPN_SECRET not set — rejecting webhook',

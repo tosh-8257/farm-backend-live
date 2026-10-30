@@ -1,3 +1,4 @@
+import { GoneException } from '@nestjs/common';
 import {
   Controller,
   Get,
@@ -64,8 +65,12 @@ export class KycController {
 
   @Post('submit')
   @Permissions('kyc:write')
-  submit(@CurrentUser() u: any, @Body() dto: SubmitKycDto) {
-    return this.svc.submit(u.id, dto);
+  submit(@CurrentUser() _u: any, @Body() _dto: SubmitKycDto) {
+    // Manual KYC uploads are retired: verification is done through Didit
+    // (POST /api/verify/create-session). Historical submissions are kept.
+    throw new GoneException(
+      'Manual KYC submission is no longer available. Please update the FARM app from the Play Store to verify your identity with Didit.',
+    );
   }
   @Get('my') getMyKyc(@CurrentUser() u: any) {
     return this.svc.getMyKyc(u.id);
@@ -84,10 +89,14 @@ export class KycController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   review(
-    @Param('id') id: string,
-    @CurrentUser() u: any,
-    @Body() dto: ReviewDto,
+    @Param('id') _id: string,
+    @CurrentUser() _u: any,
+    @Body() _dto: ReviewDto,
   ) {
-    return this.svc.review(id, u.id, dto);
+    // Manual approval/rejection is retired; KYC status now comes from Didit
+    // decisions. The queue remains readable for historical submissions.
+    throw new GoneException(
+      'Manual KYC review has been retired. KYC decisions now come from Didit.',
+    );
   }
 }

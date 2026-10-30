@@ -189,8 +189,24 @@ export class NowpaymentsWalletController {
 
   @Permissions('payments:read')
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('crypto/estimate')
+  async estimate(
+    @Query('amount') amountRaw: string,
+    @Query('currency') currency: string,
+  ) {
+    return {
+      data: await this.depositService.estimateUsdCrypto(
+        Number(amountRaw),
+        currency,
+      ),
+    };
+  }
+
+  // From main (83bcfe6): path-param variant kept for existing clients.
+  @Permissions('payments:read')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('crypto/estimate/:currency')
-  estimate(
+  estimateByCurrency(
     @Param('currency') currency: string,
     @Query('price_amount') priceAmount: string,
   ) {

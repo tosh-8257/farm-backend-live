@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   BadGatewayException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -99,6 +100,17 @@ export class DiditService {
   ) {}
 
   async createSession(userId: string) {
+    // Any previous status (none, rejected via the old manual flow, declined,
+    // abandoned, ...) may start a new Didit session. Only already-verified
+    // users are stopped, so a manual approval is never overwritten.
+    const user = await this.prisma.users.findUnique({
+      where: { id: userId },
+      select: { kyc_status: true },
+    });
+    if (user?.kyc_status === 'verified') {
+      throw new ConflictException('Identity is already verified');
+    }
+
     const apiKey = this.config.get<string>('DIDIT_API_KEY')?.trim();
     if (!apiKey) {
       throw new BadGatewayException('Didit session creation is not configured');
@@ -261,13 +273,17 @@ export class DiditService {
             return;
           }
 
+          // users.kyc_status is the single source of truth and is driven by
+          // Didit decisions. Historical manual kyc_documents rows are left
+          // untouched (audit trail). A user who is already verified (e.g.
+          // approved via the legacy manual flow) is never downgraded by a
+          // non-approval Didit event.
           await transaction.users.updateMany({
-            where: { id: vendorData },
+            where:
+              kycStatus === 'verified'
+                ? { id: vendorData }
+                : { id: vendorData, NOT: { kyc_status: 'verified' } },
             data: { kyc_status: kycStatus },
-          });
-          await transaction.kyc_documents.updateMany({
-            where: { user_id: vendorData },
-            data: { status: kycStatus },
           });
         },
         { maxWait: 1_000, timeout: 4_000 },

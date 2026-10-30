@@ -52,7 +52,9 @@ describe('DiditService', () => {
     const config = {
       get: jest.fn().mockReturnValue('test-api-key'),
     } as unknown as ConfigService;
-    const service = new DiditService(config, {} as PrismaService);
+    const service = new DiditService(config, {
+      users: { findUnique: jest.fn().mockResolvedValue({ kyc_status: 'rejected' }) },
+    } as unknown as PrismaService);
 
     await expect(service.createSession(userId)).resolves.toEqual({
       url: 'https://verify.didit.me/session/example',
@@ -88,7 +90,9 @@ describe('DiditService', () => {
     const config = {
       get: jest.fn().mockReturnValue(apiKey),
     } as unknown as ConfigService;
-    const service = new DiditService(config, {} as PrismaService);
+    const service = new DiditService(config, {
+      users: { findUnique: jest.fn().mockResolvedValue({ kyc_status: 'none' }) },
+    } as unknown as PrismaService);
     const errorLog = jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
     await expect(
@@ -145,10 +149,8 @@ describe('DiditService', () => {
       where: { id: userId },
       data: { kyc_status: 'verified' },
     });
-    expect(tx.kyc_documents.updateMany).toHaveBeenCalledWith({
-      where: { user_id: userId },
-      data: { status: 'verified' },
-    });
+    // Historical manual KYC rows are no longer rewritten by Didit events.
+    expect(tx.kyc_documents.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects invalid signatures and stale signed timestamps', async () => {
@@ -217,5 +219,14 @@ describe('DiditService', () => {
       service.processWebhook(payload, signature),
     ).resolves.toBeUndefined();
     expect(tx.users.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses a new Didit session for an already verified user', async () => {
+    const config = { get: jest.fn().mockReturnValue('key') } as any;
+    const prisma = {
+      users: { findUnique: jest.fn().mockResolvedValue({ kyc_status: 'verified' }) },
+    } as unknown as PrismaService;
+    const service = new DiditService(config, prisma);
+    await expect(service.createSession('u-1')).rejects.toThrow('Identity is already verified');
   });
 });

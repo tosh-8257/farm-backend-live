@@ -2,7 +2,7 @@ import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, UseGuard
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, IsBoolean, IsNumber, IsNotEmpty, MaxLength, IsInt, IsDateString, Min, IsEmail } from 'class-validator';
 import { Type } from 'class-transformer';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, GoneException } from '@nestjs/common';
 import { CreateWithdrawDto } from '../withdraw/dto/create-withdraw.dto';
 import { AdminService } from './admin.service';
 import { WithdrawService } from '../withdraw/withdraw.service';
@@ -260,7 +260,10 @@ export class AdminController {
   @Permissions('admin:read')
   @Get('kyc/:id')                 kycDetail(@Param('id') id: string) { return this.svc.getKycDocument(id); }
   @Permissions('admin:write')
-  @Post('kyc/:id/review')         reviewKyc(@Param('id') id: string, @CurrentUser() u: any, @Body() dto: KycReviewDto) { return this.svc.reviewKyc(id, u.id, dto as any); }
+  @Post('kyc/:id/review')         reviewKyc(@Param('id') _id: string, @CurrentUser() _u: any, @Body() _dto: KycReviewDto) {
+    // Manual KYC review is retired; decisions come from Didit. History stays readable.
+    throw new GoneException('Manual KYC review has been retired. KYC decisions now come from Didit.');
+  }
   @Permissions('admin:read')
   @Get('analytics')               analytics() { return this.svc.getAdminAnalytics(); }
   @Permissions('admin:read')
