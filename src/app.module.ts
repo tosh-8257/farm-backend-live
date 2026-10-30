@@ -61,8 +61,11 @@ import { IdempotencyMiddleware } from './common/middleware/idempotency.middlewar
       useFactory: (cfg: ConfigService) => ({
         throttlers: [
           {
-            limit: Number(cfg.get<string>('RATE_LIMIT')) || 20,
-            ttl: Number(cfg.get<string>('RATE_LIMIT_TTL')) || 60,
+            // Default raised from 20 to 100 req/min per IP: the old 60 ms window meant
+            // no effective limit, and 20/min would throttle normal app usage.
+            limit: Number(cfg.get<string>('RATE_LIMIT')) || 100,
+            // RATE_LIMIT_TTL is expressed in seconds; @nestjs/throttler v6 expects ms.
+            ttl: (Number(cfg.get<string>('RATE_LIMIT_TTL')) || 60) * 1000,
           },
         ],
       }),

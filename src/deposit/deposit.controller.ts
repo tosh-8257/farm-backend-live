@@ -5,6 +5,7 @@
   Get,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -184,6 +185,19 @@ export class NowpaymentsWalletController {
   @Get('crypto/minimum/:currency')
   minimum(@Param('currency') currency: string) {
     return this.depositService.getNowpaymentsCryptoMinimum(currency);
+  }
+
+  @Permissions('payments:read')
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('crypto/estimate/:currency')
+  estimate(
+    @Param('currency') currency: string,
+    @Query('price_amount') priceAmount: string,
+  ) {
+    return this.depositService.getNowpaymentsCryptoEstimate(
+      currency,
+      priceAmount,
+    );
   }
 
   @Permissions('payments:write')

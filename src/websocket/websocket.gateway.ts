@@ -25,7 +25,8 @@ import { ConfigService } from '@nestjs/config';
         return new RegExp(`^${escaped.replace(/\\\*/g, '.*')}$`).test(origin);
       });
 
-      return callback(null, isAllowed || localhostCorsRegex.test(origin));
+      const allowLocalhost = process.env.NODE_ENV !== 'production';
+      return callback(null, isAllowed || (allowLocalhost && localhostCorsRegex.test(origin)));
     },
   },
   namespace: '/ws',

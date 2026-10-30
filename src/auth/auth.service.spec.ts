@@ -9,15 +9,58 @@ import { FirebaseService } from '../notifications/firebase.service';
 import { RedisService } from '../common/redis/redis.service';
 import * as bcrypt from 'bcrypt';
 
+const createPrismaMock = () => {
+  const methods = [
+    'aggregate',
+    'count',
+    'create',
+    'createMany',
+    'delete',
+    'deleteMany',
+    'findFirst',
+    'findMany',
+    'findUnique',
+    'update',
+    'updateMany',
+    'upsert',
+  ];
+  const delegates = [
+    'activity_logs',
+    'deposit',
+    'device_tokens',
+    'otp_verifications',
+    'pending_login_verifications',
+    'security_events',
+    'user_sessions',
+    'user_settings',
+    'users',
+    'wallets',
+    'withdrawal',
+  ];
+  const prisma: Record<string, any> = Object.fromEntries(
+    delegates.map((delegate) => [
+      delegate,
+      Object.fromEntries(
+        methods.map((method) => [method, jest.fn().mockResolvedValue(null)]),
+      ),
+    ]),
+  );
+  prisma.$transaction = jest.fn(async (callback: (tx: any) => unknown) =>
+    callback(prisma),
+  );
+  return prisma;
+};
+
 describe('AuthService', () => {
   let service: AuthService;
   let module: TestingModule;
 
   beforeEach(async () => {
+    const prisma = createPrismaMock();
     module = await Test.createTestingModule({
       providers: [
         AuthService,
-        PrismaService,
+        { provide: PrismaService, useValue: prisma },
         JwtService,
         ConfigService,
         {

@@ -2,6 +2,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { EscrowService } from '../escrow/escrow.service';
@@ -10,6 +12,10 @@ import { WithdrawService } from '../withdraw/withdraw.service';
 import { paginationParams, paginate } from '../common/utils/pagination.util';
 import { CurrencyConversionService } from '../currency/currency-conversion.service';
 import { enrichAdminListItem } from './admin-response-utils';
+import { CacheService } from '../common/cache/cache.service';
+
+const EXCHANGE_RATES_CACHE_KEY = 'exchange-rates:all';
+const EXCHANGE_RATES_CACHE_TTL_SECONDS = 300;
 
 @Injectable()
 export class AdminService {
@@ -19,6 +25,7 @@ export class AdminService {
     private notifications: NotificationsService,
     private withdrawService: WithdrawService,
     private readonly currencyConversionService: CurrencyConversionService,
+    @Optional() private readonly cache?: CacheService,
   ) {}
 
   async getDashboardStats() {
@@ -1173,10 +1180,20 @@ export class AdminService {
   }
 
   async getExchangeRates() {
+    const cached = await this.cache?.cacheGet<{ data: unknown[] }>(
+      EXCHANGE_RATES_CACHE_KEY,
+    );
+    if (cached) return cached;
     const rates = await this.prisma.exchange_rates.findMany({
       orderBy: [{ base_currency: 'asc' }, { target_currency: 'asc' }],
     });
-    return { data: rates };
+    const result = { data: rates };
+    await this.cache?.cacheSet(
+      EXCHANGE_RATES_CACHE_KEY,
+      result,
+      EXCHANGE_RATES_CACHE_TTL_SECONDS,
+    );
+    return result;
   }
 
   async getCurrencyRates() {
@@ -1229,6 +1246,7 @@ export class AdminService {
         upserted.push(entry as any);
       }
     }
+    await this.cache?.cacheDelete(EXCHANGE_RATES_CACHE_KEY);
     return { data: upserted, message: 'Exchange rates updated' };
   }
 
@@ -1742,6 +1760,16 @@ export class AdminService {
   async updateUser(userId: string, dto: any, adminId: string) {
     const user = await this.prisma.users.findUnique({ where: { id: userId } });
     if (!user || user.is_deleted) throw new NotFoundException('User not found');
+    // Staff accounts and staff roles are managed only via the SUPER_ADMIN
+    // admin-management routes; the ordinary user editor must not touch them
+    // (prevents changing a staff member's phone/email/role from here).
+    const staffRoles = ['admin', 'super_admin'];
+    if (
+      staffRoles.includes(String(user.role ?? '').toLowerCase()) ||
+      (dto.role !== undefined && staffRoles.includes(String(dto.role).toLowerCase()))
+    ) {
+      throw new ForbiddenException('Staff roles can only be managed by superadmins');
+    }
 
     const updateData: any = {};
     if (dto.first_name) updateData.first_name = dto.first_name;

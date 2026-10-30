@@ -8,6 +8,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { TurnstileService } from '../common/services/turnstile.service';
 import { TurnstileGuard } from '../common/guards/turnstile.guard';
+import { requireJwtAccessSecret } from './jwt-secret';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { TurnstileGuard } from '../common/guards/turnstile.guard';
     JwtModule.registerAsync({
   inject: [ConfigService],
   useFactory: (cfg: ConfigService) => ({
-    secret: cfg.get<string>('JWT_ACCESS_SECRET') || 'secret',
+    secret: requireJwtAccessSecret(cfg),
     signOptions: {
       expiresIn: '15m' as const,
     },

@@ -4,6 +4,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -62,6 +63,11 @@ export class CreateWithdrawDto {
   @IsOptional()
   @IsString()
   network?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  extra_id?: string;
 
   @IsOptional()
   @IsString()

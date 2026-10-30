@@ -29,8 +29,29 @@ async function bootstrap() {
     }
   };
 
-  app.use(express.json({ limit: '29mb', verify: rawBodySaver }));
-  app.use(express.urlencoded({ extended: true, limit: '29mb', verify: rawBodySaver }));
+  // Lightweight liveness probe for Render (no auth, no DB/Redis detail).
+  expressApp.get('/health', (_req, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
+  // Large bodies are only accepted on routes that carry base64 uploads
+  // (KYC documents and support-ticket attachments). Everything else is
+  // capped at 1 MB. The first parser that runs marks the body as parsed,
+  // so the global parsers below skip these routes.
+  const LARGE_BODY_LIMIT = '29mb';
+  const DEFAULT_BODY_LIMIT = '1mb';
+  const largeBodyRoutes = [
+    '/api/v1/kyc/submit',
+    '/api/v1/support/tickets',
+    '/api/v1/admin/support/tickets',
+  ];
+  app.use(largeBodyRoutes, express.json({ limit: LARGE_BODY_LIMIT, verify: rawBodySaver }));
+  app.use(
+    largeBodyRoutes,
+    express.urlencoded({ extended: true, limit: LARGE_BODY_LIMIT, verify: rawBodySaver }),
+  );
+  app.use(express.json({ limit: DEFAULT_BODY_LIMIT, verify: rawBodySaver }));
+  app.use(express.urlencoded({ extended: true, limit: DEFAULT_BODY_LIMIT, verify: rawBodySaver }));
 
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -116,7 +137,8 @@ async function bootstrap() {
       return true;
     }
 
-    return corsOriginMatches(origin) || localhostCorsRegex.test(origin);
+    // Localhost origins are only allowed outside production.
+    return corsOriginMatches(origin) || (!isProduction && localhostCorsRegex.test(origin));
   };
 
   // Respond to browser preflight requests before the CORS package or any

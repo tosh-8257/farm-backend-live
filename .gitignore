@@ -69,3 +69,8 @@ dist
 
 # Firebase credentials and generated files
 /firebase/
+# Build output and local leftovers (do not commit)
+dist-tsc/
+*.tsbuildinfo
+*.bak
+tmp_tsc_output.txt

@@ -45,9 +45,7 @@ export function validateSecurityEnvironment() {
     logger.log('✅ Security environment validation completed.');
   } else {
     if (!process.env.JWT_ACCESS_SECRET) {
-      logger.warn(
-        '⚠️ JWT_ACCESS_SECRET not set - using development default. DO NOT use in production!',
-      );
+      throw new Error('JWT_ACCESS_SECRET must be set (no insecure default is used).');
     }
     if (!process.env.QR_HMAC_SECRET) {
       logger.warn(

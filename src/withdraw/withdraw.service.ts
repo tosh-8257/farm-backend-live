@@ -9,7 +9,6 @@ import { PrismaService } from '../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SecurityService } from '../security/security.service';
 import { PaystackService } from '../paystack/paystack.service';
-import { IvorypayService } from '../ivorypay/ivorypay.service';
 import { CreateWithdrawDto } from './dto/create-withdraw.dto';
 import { v4 as uuidv4 } from 'uuid';
 import { CacheService } from '../common/cache/cache.service';
@@ -19,23 +18,36 @@ import { CurrencyConversionService } from '../currency/currency-conversion.servi
 import { WebsocketGateway } from '../websocket/websocket.gateway';
 import { PaystackTransferInitiationError } from '../paystack/paystack.service';
 import { Cron } from '@nestjs/schedule';
-import { IvorypayPayoutOutcomeUnknownError } from '../ivorypay/ivorypay.service';
 import { NowpaymentsService } from '../nowpayments/nowpayments.service';
 
 const MIN_NOWPAYMENTS_CRYPTO_WITHDRAWAL_USD = 2;
+
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** Per-user rolling 24h withdrawal limits (all methods combined). 0 disables a limit. */
+export function withdrawalDailyLimits() {
+  return {
+    maxCount: envNumber('WITHDRAWAL_DAILY_MAX_COUNT', 5),
+    maxAmount: envNumber('WITHDRAWAL_DAILY_MAX_AMOUNT', 1_000_000),
+  };
+}
 
 @Injectable()
 export class WithdrawService {
   private readonly logger = new Logger(WithdrawService.name);
   private reconcilingPaystackWithdrawals = false;
-  private reconcilingIvorypayWithdrawals = false;
+  private reconcilingNowpaymentsPayouts = false;
 
   constructor(
     private prisma: PrismaService,
     private authService: AuthService,
     private securityService: SecurityService,
     private paystack: PaystackService,
-    private ivorypay: IvorypayService,
     private cache: CacheService,
     private notificationsService: NotificationsService,
     private readonly currencyConversionService: CurrencyConversionService,
@@ -87,9 +99,9 @@ export class WithdrawService {
     const originalMethodMinima = {
       BANK_TRANSFER: 4999,
       MOBILE_MONEY: 1499,
-      CRYPTO: 100,
     } as const;
-    const effectiveMinimum = originalMethodMinima[method];
+    const effectiveMinimum =
+      originalMethodMinima[method as keyof typeof originalMethodMinima];
 
     if (method === 'BANK_TRANSFER') {
       if (amount < effectiveMinimum) {
@@ -111,12 +123,6 @@ export class WithdrawService {
       if (amount > 249999) {
         throw new BadRequestException(
           'Maximum withdrawal amount for mobile money is 249,999 FARM',
-        );
-      }
-    } else if (method === 'CRYPTO') {
-      if (amount < effectiveMinimum) {
-        throw new BadRequestException(
-          `Minimum withdrawal amount for crypto is ${effectiveMinimum.toLocaleString()} FARM`,
         );
       }
     }
@@ -146,12 +152,6 @@ export class WithdrawService {
           'Account number and bank name are required for bank transfer withdrawals',
         );
       }
-    } else if (dto.method === 'CRYPTO') {
-      if (!cryptoAddress || !cryptoAsset || !normalizedNetwork) {
-        throw new BadRequestException(
-          'Crypto asset, address and network are required for cryptocurrency withdrawals',
-        );
-      }
     } else {
       throw new BadRequestException(
         `Unsupported withdrawal method: ${dto.method}`,
@@ -163,91 +163,11 @@ export class WithdrawService {
     const fee = Number((amount * feePercent).toFixed(8));
     const settlement = Number((amount - fee).toFixed(8));
     const reference = uuidv4();
-    const normalizedNetworkValue =
-      dto.method === 'CRYPTO'
-        ? normalizedNetwork
-          ? normalizedNetwork.toUpperCase()
-          : (dto.network ?? '')
-        : (dto.network ?? '');
-    const normalizedCryptoAsset =
-      dto.method === 'CRYPTO'
-        ? cryptoAsset
-          ? cryptoAsset.toUpperCase()
-          : (dto.cryptoAsset ?? '')
-        : (dto.cryptoAsset ?? '');
+    const normalizedNetworkValue = dto.network ?? '';
+    const normalizedCryptoAsset = dto.cryptoAsset ?? '';
 
-    let cryptoExchangeSnapshot: any = null;
     let paystackConversionSnapshot: any = null;
-    if (dto.method === 'CRYPTO') {
-      if (!cryptoAddress) {
-        throw new BadRequestException(
-          'Crypto asset, address and network are required for cryptocurrency withdrawals',
-        );
-      }
-      const rate = await this.currencyConversionService.getCurrentRate();
-      const farmUsdRate = Number(rate.farm_usd_rate ?? 0);
-      const farmKesRate = Number(rate.farm_kes_rate ?? 1);
-      const usdKesRate = Number(rate.usd_kes_rate ?? 150);
-      const cryptoAmount = Number((settlement * farmUsdRate).toFixed(8));
-      const amountUsd = Number((amount * farmUsdRate).toFixed(8));
-      const feeUsd = Number((fee * farmUsdRate).toFixed(8));
-      const settlementUsd = Number((settlement * farmUsdRate).toFixed(8));
-      const payoutQuote = await this.ivorypay.quoteCryptoTransfer({
-        amount: cryptoAmount,
-        token: normalizedCryptoAsset,
-        network: normalizedNetworkValue,
-        address: cryptoAddress,
-        fiatCurrency: 'KES',
-      });
-      const minimumCryptoAmount = Number(
-        payoutQuote.minimumAmountInCrypto ?? 0,
-      );
-      if (
-        Number.isFinite(minimumCryptoAmount) &&
-        minimumCryptoAmount > cryptoAmount
-      ) {
-        const minimumFarmAmount =
-          farmUsdRate > 0
-            ? Number(
-                (
-                  minimumCryptoAmount /
-                  (farmUsdRate * (1 - feePercent))
-                ).toFixed(2),
-              )
-            : null;
-        throw new BadRequestException(
-          `IvoryPay requires at least ${minimumCryptoAmount} ${normalizedCryptoAsset} on ${normalizedNetworkValue}` +
-            (minimumFarmAmount
-              ? ` (approximately ${minimumFarmAmount} FARM including the withdrawal fee).`
-              : '.'),
-        );
-      }
-      cryptoExchangeSnapshot = {
-        farmAmount: amount,
-        farmKesRate,
-        usdKesRate,
-        farmUsdRate,
-        cryptoCurrency: normalizedCryptoAsset,
-        cryptoAmount,
-        network: normalizedNetworkValue,
-        conversionTimestamp: new Date().toISOString(),
-        amount_farm: amount,
-        fee_farm: fee,
-        settlement_farm: settlement,
-        amount_usd: amountUsd,
-        fee_usd: feeUsd,
-        settlement_usd: settlementUsd,
-        crypto_asset: normalizedCryptoAsset,
-        ivorypay_payout_quote: {
-          minimumAmountInCrypto: minimumCryptoAmount,
-          totalAmountInCrypto: payoutQuote.totalAmountInCrypto,
-          amountInCryptoLessFee: payoutQuote.amountInCryptoLessFee,
-          platformFeeInCrypto: payoutQuote.platformFeeInCrypto,
-          gasFeeInCrypto: payoutQuote.gasFeeInCrypto,
-          quotedAt: new Date().toISOString(),
-        },
-      };
-    } else {
+    {
       const rate = await this.currencyConversionService.getCurrentRate();
       const farmKesRate = Number(rate.farm_kes_rate ?? 0);
       if (!Number.isFinite(farmKesRate) || farmKesRate <= 0) {
@@ -271,10 +191,7 @@ export class WithdrawService {
     }
 
     const withdrawal = await this.prisma.$transaction(async (tx) => {
-      await tx.wallets.update({
-        where: { id: wallet.id },
-        data: { locked_balance: { increment: amount } },
-      });
+      await this.lockFundsInTx(tx, wallet.id, userId, amount);
 
       const created = await tx.withdrawal.create({
         data: {
@@ -310,12 +227,11 @@ export class WithdrawService {
           description: 'Pending withdrawal',
           metadata: {
             method: dto.method,
-            provider: dto.method === 'CRYPTO' ? 'ivorypay' : 'paystack',
+            provider: 'paystack',
             user_id: userId,
             reference,
             cryptoAsset: normalizedCryptoAsset,
             network: normalizedNetworkValue,
-            conversion_snapshot: cryptoExchangeSnapshot,
             paystack_conversion_snapshot: paystackConversionSnapshot,
           },
         },
@@ -347,7 +263,9 @@ export class WithdrawService {
     const rate = await this.currencyConversionService.getCurrentRate();
     const farmUsdRate = Number(rate.farm_usd_rate ?? 0);
     if (!Number.isFinite(farmUsdRate) || farmUsdRate <= 0) {
-      throw new BadRequestException('The FARM/USD exchange rate is unavailable');
+      throw new BadRequestException(
+        'The FARM/USD exchange rate is unavailable',
+      );
     }
     const minimumUsd = MIN_NOWPAYMENTS_CRYPTO_WITHDRAWAL_USD;
     const minimumFarm = Math.ceil((minimumUsd / farmUsdRate) * 1e8) / 1e8;
@@ -397,7 +315,11 @@ export class WithdrawService {
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BadRequestException('Enter a valid crypto withdrawal amount');
     }
-    if (dto.method !== 'CRYPTO' || !address || !/^[a-z0-9]{2,20}$/.test(currency)) {
+    if (
+      dto.method !== 'CRYPTO' ||
+      !address ||
+      !/^[a-z0-9]{2,20}$/.test(currency)
+    ) {
       throw new BadRequestException(
         'A valid crypto currency and destination address are required',
       );
@@ -457,23 +379,20 @@ export class WithdrawService {
       payoutAmount,
     );
 
+    const addressValid = await this.nowpayments.validatePayoutAddress(
+      address,
+      currency,
+      dto.extra_id,
+    );
+    if (!addressValid) {
+      throw new BadRequestException(
+        `The destination address is not a valid ${currency.toUpperCase()} address`,
+      );
+    }
+
     const reference = uuidv4();
     const withdrawal = await this.prisma.$transaction(async (tx) => {
-      const lock = await tx.wallets.updateMany({
-        where: {
-          id: wallet.id,
-          balance: { gte: amount },
-          locked_balance: {
-            lte: Number(wallet.balance ?? 0) - amount,
-          },
-        },
-        data: { locked_balance: { increment: amount } },
-      });
-      if (lock.count !== 1) {
-        throw new BadRequestException(
-          'Wallet balance changed; refresh and try again',
-        );
-      }
+      await this.lockFundsInTx(tx, wallet.id, userId, amount);
       const created = await tx.withdrawal.create({
         data: {
           userId,
@@ -500,7 +419,7 @@ export class WithdrawService {
           fee,
           net_amount: settlement,
           currency: 'FARM',
-          description: 'Pending NOWPayments crypto withdrawal approval',
+          description: 'Pending NOWPayments crypto withdrawal',
           metadata: {
             provider: 'nowpayments',
             method: 'CRYPTO',
@@ -508,9 +427,10 @@ export class WithdrawService {
             reference,
             nowpayments_currency: currency,
             nowpayments_address: address,
+            nowpayments_extra_id: dto.extra_id ?? null,
             nowpayments_payout_amount: payoutAmount,
             nowpayments_network_fee_estimate: networkFee,
-            nowpayments_payout_status: 'awaiting_admin_approval',
+            nowpayments_payout_status: 'queued',
             payout_approval_status: 'pending',
             amount_farm: amount,
             fee_farm: fee,
@@ -530,15 +450,24 @@ export class WithdrawService {
       this.cache.cacheInvalidatePattern(`transactions:${userId}:*`),
     ]);
     this.websocket.emitBalanceUpdate(userId, availableBalance - amount);
+    setImmediate(() =>
+      this.submitNowpaymentsPayout(reference, 'system:auto').catch((error) =>
+        this.logger.warn(
+          `Automatic NOWPayments payout for ${reference} did not complete: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      ),
+    );
     return {
       success: true,
       reference,
-      status: 'PENDING_ADMIN_APPROVAL',
+      status: 'PROCESSING',
       withdrawal,
       estimated_crypto_amount: payoutAmount,
       estimated_network_fee: networkFee,
       currency: currency.toUpperCase(),
-      message: 'Withdrawal submitted for administrator approval',
+      message: 'Withdrawal submitted for payout',
     };
   }
 
@@ -587,7 +516,12 @@ export class WithdrawService {
     );
   }
 
+  /** Admin-triggered retry/reconcile. Never re-submits a payout whose outcome is unknown. */
   async approveNowpaymentsCryptoWithdrawal(reference: string, adminId: string) {
+    return this.submitNowpaymentsPayout(reference, adminId);
+  }
+
+  async submitNowpaymentsPayout(reference: string, adminId: string) {
     const withdrawal = await this.prisma.withdrawal.findUnique({
       where: { reference },
     });
@@ -629,28 +563,52 @@ export class WithdrawService {
       );
     }
 
-    const claimed = retryUnknownPayout
-      ? true
-      : await this.prisma.$transaction(async (tx) => {
-          const updated = await tx.withdrawal.updateMany({
-            where: { reference, status: 'PENDING' },
-            data: { status: 'PROCESSING' },
-          });
-          if (updated.count !== 1) return false;
-          await tx.transactions.update({
-            where: { id: transaction.id },
-            data: {
-              metadata: {
-                ...metadata,
-                payout_approval_status: 'approved',
-                payout_approved_by: adminId,
-                payout_approved_at: new Date().toISOString(),
-                nowpayments_payout_status: 'creating',
-              },
+    if (retryUnknownPayout) {
+      // Outcome of an earlier submission is unknown: look it up by our
+      // unique_external_id instead of creating a second payout.
+      const found = await this.nowpayments.findPayoutByExternalId(reference);
+      if (!found) {
+        await this.prisma.transactions.update({
+          where: { id: transaction.id },
+          data: {
+            metadata: {
+              ...metadata,
+              nowpayments_payout_lookup_at: new Date().toISOString(),
             },
-          });
-          return true;
+          },
         });
+        throw new BadRequestException(
+          'No NOWPayments payout exists for this reference yet. It will not be re-submitted automatically; confirm in the NOWPayments dashboard, then reject the withdrawal to refund it.',
+        );
+      }
+      return this.recordPayoutCreated(
+        transaction.id,
+        reference,
+        found,
+        adminId,
+      );
+    }
+
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.withdrawal.updateMany({
+        where: { reference, status: 'PENDING' },
+        data: { status: 'PROCESSING' },
+      });
+      if (updated.count !== 1) return false;
+      await tx.transactions.update({
+        where: { id: transaction.id },
+        data: {
+          metadata: {
+            ...metadata,
+            payout_approval_status: 'approved',
+            payout_approved_by: adminId,
+            payout_approved_at: new Date().toISOString(),
+            nowpayments_payout_status: 'creating',
+          },
+        },
+      });
+      return true;
+    });
     if (!claimed) {
       throw new BadRequestException(
         'This crypto withdrawal was already approved',
@@ -689,11 +647,23 @@ export class WithdrawService {
         `NOWPayments payout creation outcome is unknown for ${reference}; funds remain reserved`,
       );
       throw new BadGatewayException(
-        'NOWPayments payout status is not yet known. Funds remain reserved; retry approval to reconcile this payout.',
+        'NOWPayments payout status is not yet known. Funds remain reserved; it will be looked up (never re-submitted) by the reconciler.',
       );
     }
+    return this.recordPayoutCreated(transaction.id, reference, payout, adminId);
+  }
+
+  private async recordPayoutCreated(
+    transactionId: string,
+    reference: string,
+    payout: Record<string, any>,
+    adminId: string,
+  ) {
     const payoutId = String(
-      payout.id ?? payout.batch_withdrawal_id ?? payout.withdrawals?.[0]?.id ?? '',
+      payout.id ??
+        payout.batch_withdrawal_id ??
+        payout.withdrawals?.[0]?.id ??
+        '',
     );
     if (!payoutId) {
       throw new BadRequestException(
@@ -703,25 +673,49 @@ export class WithdrawService {
     const payoutStatus = String(
       payout.status ?? payout.withdrawals?.[0]?.status ?? 'creating',
     ).toLowerCase();
+    const current = await this.prisma.transactions.findUnique({
+      where: { id: transactionId },
+      select: { metadata: true },
+    });
+    const metadata = (current?.metadata as Record<string, any> | null) ?? {};
     await this.prisma.transactions.update({
-      where: { id: transaction.id },
+      where: { id: transactionId },
       data: {
         metadata: {
           ...metadata,
           payout_approval_status: 'approved',
-          payout_approved_by: adminId,
-          payout_approved_at: new Date().toISOString(),
+          payout_approved_by: metadata.payout_approved_by ?? adminId,
           nowpayments_payout_id: payoutId,
           nowpayments_payout_status: payoutStatus,
           nowpayments_payout_response: payout,
         },
       },
     });
+    let status = payoutStatus;
+    if (status === 'creating') {
+      const code = this.nowpayments.generatePayoutVerificationCode();
+      if (code) {
+        try {
+          const verified = await this.verifyNowpaymentsCryptoWithdrawal(
+            reference,
+            code,
+            'system:auto',
+          );
+          status = verified.status;
+        } catch (error) {
+          this.logger.warn(
+            `Automatic NOWPayments payout verification failed for ${reference}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
     return {
       success: true,
       payout_id: payoutId,
-      status: payoutStatus,
-      requires_provider_verification: payoutStatus === 'creating',
+      status,
+      requires_provider_verification: status === 'creating',
     };
   }
 
@@ -782,7 +776,9 @@ export class WithdrawService {
         '',
     );
     if (!payoutId) {
-      this.logger.warn('NOWPayments payout webhook did not include a payout ID');
+      this.logger.warn(
+        'NOWPayments payout webhook did not include a payout ID',
+      );
       return false;
     }
     const transaction = await this.prisma.transactions.findFirst({
@@ -882,23 +878,19 @@ export class WithdrawService {
       withdrawal_status: withdrawal.status,
       provider:
         metadata.provider ??
-        (withdrawal.method === 'CRYPTO' ? 'ivorypay' : 'paystack'),
+        (withdrawal.method === 'CRYPTO' ? 'legacy' : 'paystack'),
       method: withdrawal.method,
       amount: withdrawal.amount,
       currency: withdrawal.currency,
       rejection_reason: withdrawal.rejectionReason,
     };
 
-    if (
-      withdrawal.method === 'CRYPTO' &&
-      metadata.provider === 'nowpayments'
-    ) {
+    if (withdrawal.method === 'CRYPTO' && metadata.provider === 'nowpayments') {
       statusResult.nowpayments_payout_id = metadata.nowpayments_payout_id;
       statusResult.nowpayments_payout_status =
         metadata.nowpayments_payout_status;
       statusResult.payout_approval_status = metadata.payout_approval_status;
-      statusResult.estimated_crypto_amount =
-        metadata.nowpayments_payout_amount;
+      statusResult.estimated_crypto_amount = metadata.nowpayments_payout_amount;
       if (
         metadata.nowpayments_payout_id &&
         withdrawal.status.toUpperCase() === 'PROCESSING'
@@ -922,8 +914,7 @@ export class WithdrawService {
                   ...latestMetadata,
                   nowpayments_payout_status:
                     providerStatus || metadata.nowpayments_payout_status,
-                  nowpayments_payout_last_checked_at:
-                    new Date().toISOString(),
+                  nowpayments_payout_last_checked_at: new Date().toISOString(),
                   nowpayments_payout_response: verified,
                 },
               },
@@ -954,83 +945,6 @@ export class WithdrawService {
               : 'Unable to verify NOWPayments payout status';
           this.logger.warn(
             `NOWPayments withdrawal status check failed for ${reference}: ${statusResult.nowpayments_status_error}`,
-          );
-        }
-      }
-    } else if (withdrawal.method === 'CRYPTO') {
-      statusResult.ivorypay_withdrawal_id = metadata.ivorypay_withdrawal_id;
-      statusResult.ivorypay_withdrawal_status =
-        metadata.ivorypay_withdrawal_status;
-      statusResult.ivorypay_failure_reason = metadata.ivorypay_failure_reason;
-      if (['PENDING', 'PROCESSING'].includes(withdrawal.status.toUpperCase())) {
-        try {
-          const verified = await this.ivorypay.verifyTransaction(
-            reference,
-            metadata.ivorypay_withdrawal_id,
-            [reference],
-          );
-          const verifiedData = verified?.data ?? verified;
-          const providerStatus = String(
-            verifiedData?.status ?? '',
-          ).toUpperCase();
-          statusResult.ivorypay_withdrawal_details = verifiedData;
-          statusResult.ivorypay_withdrawal_status =
-            verifiedData?.status ?? statusResult.ivorypay_withdrawal_status;
-
-          const providerId =
-            verifiedData?.id ??
-            verifiedData?.transaction_id ??
-            metadata.ivorypay_withdrawal_id;
-          const latestTransaction = await this.prisma.transactions.findUnique({
-            where: { transaction_reference: reference },
-          });
-          if (latestTransaction) {
-            const latestMetadata = (latestTransaction.metadata as any) ?? {};
-            await this.prisma.transactions.update({
-              where: { id: latestTransaction.id },
-              data: {
-                metadata: {
-                  ...latestMetadata,
-                  provider: 'ivorypay',
-                  ...(providerId ? { ivorypay_withdrawal_id: providerId } : {}),
-                  ivorypay_withdrawal_status:
-                    verifiedData?.status ??
-                    latestMetadata.ivorypay_withdrawal_status,
-                  ...(verifiedData?.cryptoTransactionHash
-                    ? {
-                        ivorypay_transaction_hash:
-                          verifiedData.cryptoTransactionHash,
-                      }
-                    : {}),
-                  ivorypay_last_checked_at: new Date().toISOString(),
-                },
-              },
-            });
-          }
-
-          if (providerStatus === 'SUCCESS') {
-            await this.markAsSuccess(reference);
-          } else if (providerStatus === 'FAILED') {
-            await this.rejectWithdrawal(
-              reference,
-              verifiedData?.failureReason ||
-                verifiedData?.reason ||
-                'IvoryPay crypto payout failed',
-            );
-          }
-          const latestWithdrawal = await this.prisma.withdrawal.findFirst({
-            where: { reference, userId },
-          });
-          if (latestWithdrawal) {
-            statusResult.withdrawal_status = latestWithdrawal.status;
-          }
-        } catch (error) {
-          statusResult.ivorypay_status_error =
-            error instanceof Error
-              ? error.message
-              : 'Unable to verify IvoryPay payout status';
-          this.logger.warn(
-            `IvoryPay withdrawal status check failed for ${reference}: ${statusResult.ivorypay_status_error}`,
           );
         }
       }
@@ -1156,42 +1070,57 @@ export class WithdrawService {
     }
   }
 
-  @Cron('* * * * *')
-  async reconcilePendingIvorypayWithdrawals() {
-    if (this.reconcilingIvorypayWithdrawals) return;
-    this.reconcilingIvorypayWithdrawals = true;
-
+  /** Re-checks NOWPayments payouts so a missed IPN can never strand funds. */
+  @Cron('*/5 * * * *')
+  async reconcileNowpaymentsPayouts() {
+    if (this.reconcilingNowpaymentsPayouts) return;
+    this.reconcilingNowpaymentsPayouts = true;
     try {
-      const cutoff = new Date(Date.now() - 60_000);
-      const pending = await this.prisma.withdrawal.findMany({
+      const cutoff = new Date(Date.now() - 2 * 60_000);
+      const candidates = await this.prisma.transactions.findMany({
         where: {
-          status: 'PROCESSING',
-          method: 'CRYPTO',
-          updatedAt: { lt: cutoff },
+          transaction_type: 'withdrawal',
+          status: { in: ['pending', 'processing'] },
+          created_at: { lt: cutoff },
+          metadata: { path: ['provider'], equals: 'nowpayments' },
         },
-        select: { reference: true, userId: true },
-        orderBy: { updatedAt: 'asc' },
+        select: { transaction_reference: true, metadata: true },
+        orderBy: { created_at: 'asc' },
         take: 50,
       });
-
-      for (const withdrawal of pending) {
+      for (const candidate of candidates) {
+        const reference = candidate.transaction_reference;
+        const metadata =
+          (candidate.metadata as Record<string, any> | null) ?? {};
         try {
-          const status = await this.getWithdrawalStatus(
-            withdrawal.reference,
-            withdrawal.userId,
-          );
-          if (status?.withdrawal_status === 'PROCESSING') {
-            await this.prisma.withdrawal.updateMany({
-              where: {
-                reference: withdrawal.reference,
-                status: 'PROCESSING',
-              },
-              data: { updatedAt: new Date() },
+          if (metadata.nowpayments_payout_id) {
+            await this.reconcileNowpaymentsPayoutWebhook({
+              id: metadata.nowpayments_payout_id,
             });
+          } else if (metadata.payout_approval_status === 'pending') {
+            // Auto-submit never ran (e.g. restart): submit now. Claim is guarded.
+            await this.submitNowpaymentsPayout(reference, 'system:reconciler');
+          } else {
+            const found =
+              await this.nowpayments.findPayoutByExternalId(reference);
+            if (found) {
+              const tx = await this.prisma.transactions.findUnique({
+                where: { transaction_reference: reference },
+                select: { id: true },
+              });
+              if (tx) {
+                await this.recordPayoutCreated(
+                  tx.id,
+                  reference,
+                  found,
+                  'system:reconciler',
+                );
+              }
+            }
           }
         } catch (error) {
-          this.logger.error(
-            `IvoryPay withdrawal reconciliation failed for ${withdrawal.reference}: ${
+          this.logger.warn(
+            `NOWPayments payout reconciliation failed for ${reference}: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
@@ -1199,13 +1128,66 @@ export class WithdrawService {
       }
     } catch (error) {
       this.logger.error(
-        `Could not load pending IvoryPay withdrawals for reconciliation: ${
+        `Could not load NOWPayments payouts for reconciliation: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     } finally {
-      this.reconcilingIvorypayWithdrawals = false;
+      this.reconcilingNowpaymentsPayouts = false;
     }
+  }
+
+  /** Legacy IvoryPay withdrawals still holding locked funds (read-only). */
+  async listStuckLegacyWithdrawals() {
+    const rows = await this.prisma.withdrawal.findMany({
+      where: { method: 'CRYPTO', status: { in: ['PENDING', 'PROCESSING'] } },
+      orderBy: { createdAt: 'asc' },
+      take: 200,
+    });
+    const result: any[] = [];
+    for (const row of rows) {
+      const tx = await this.prisma.transactions.findUnique({
+        where: { transaction_reference: row.reference },
+        select: { metadata: true },
+      });
+      const provider = (tx?.metadata as any)?.provider;
+      if (provider !== 'nowpayments')
+        result.push({ ...row, provider: provider ?? 'ivorypay' });
+    }
+    return result;
+  }
+
+  /** Refunds (unlocks) and closes one stuck legacy IvoryPay withdrawal. SUPER_ADMIN only. */
+  async refundLegacyWithdrawal(
+    idOrReference: string,
+    adminId: string,
+    reason?: string,
+  ) {
+    const withdrawal = await this.prisma.withdrawal.findFirst({
+      where: { OR: [{ id: idOrReference }, { reference: idOrReference }] },
+    });
+    if (!withdrawal || withdrawal.method !== 'CRYPTO') {
+      throw new BadRequestException('Legacy crypto withdrawal not found');
+    }
+    const tx = await this.prisma.transactions.findUnique({
+      where: { transaction_reference: withdrawal.reference },
+      select: { metadata: true },
+    });
+    if ((tx?.metadata as any)?.provider === 'nowpayments') {
+      throw new BadRequestException(
+        'Only legacy (IvoryPay) withdrawals can be closed here',
+      );
+    }
+    if (!['PENDING', 'PROCESSING'].includes(withdrawal.status)) {
+      throw new BadRequestException('This withdrawal is already closed');
+    }
+    this.logger.warn(
+      `Legacy withdrawal ${withdrawal.reference} refunded and closed by ${adminId}`,
+    );
+    return this.rejectWithdrawal(
+      withdrawal.reference,
+      reason ?? 'IvoryPay retired: legacy withdrawal refunded and closed',
+    );
   }
 
   private async processWithdrawal(reference: string) {
@@ -1261,9 +1243,6 @@ export class WithdrawService {
           bank_code: bankCode,
           currency: 'KES',
         });
-      } else if (withdrawal.method === 'CRYPTO') {
-        // Off-chain crypto withdrawal via Ivorypay (or mock)
-        await this.processCryptoWithdrawal(withdrawal, reference);
       } else {
         throw new BadRequestException(
           'Unsupported withdrawal method for transfer processing',
@@ -1364,156 +1343,6 @@ export class WithdrawService {
     }
   }
 
-  // Support crypto withdrawal processing using Ivorypay (or a stub if not configured)
-  private async processCryptoWithdrawal(withdrawal: any, reference: string) {
-    try {
-      const transaction = await this.prisma.transactions.findUnique({
-        where: { transaction_reference: reference },
-      });
-      const metadata = (transaction?.metadata as any) ?? {};
-      const snapshot = metadata.conversion_snapshot ?? null;
-      const rate = snapshot
-        ? {
-            farm_usd_rate: Number(
-              snapshot.farmUsdRate ?? snapshot.farm_usd_rate ?? 0,
-            ),
-            farm_kes_rate: Number(
-              snapshot.farmKesRate ?? snapshot.farm_kes_rate ?? 1,
-            ),
-            usd_kes_rate: Number(
-              snapshot.usdKesRate ?? snapshot.usd_kes_rate ?? 150,
-            ),
-          }
-        : await this.currencyConversionService.getCurrentRate();
-      const farmUsdRate = Number(rate.farm_usd_rate ?? 0);
-      const cryptoAddress =
-        withdrawal.cryptoAddress ??
-        withdrawal.walletAddress ??
-        withdrawal.walletaddress ??
-        withdrawal.wallet_address ??
-        '';
-      const cryptoAsset = (
-        (withdrawal.cryptoAsset ?? withdrawal.token ?? 'USDT') as string
-      )
-        .toString()
-        .toUpperCase();
-      const normalizedNetwork = (withdrawal.network ?? 'POLYGON')
-        .toString()
-        .toUpperCase();
-      const cryptoAmount = Number(
-        (
-          Number(withdrawal.settlement ?? withdrawal.amount ?? 0) * farmUsdRate
-        ).toFixed(8),
-      );
-      const settlementUsd = Number(
-        (Number(withdrawal.settlement ?? 0) * farmUsdRate).toFixed(8),
-      );
-
-      if (!cryptoAsset || !['USDC', 'USDT'].includes(cryptoAsset)) {
-        throw new BadRequestException(
-          'Unsupported crypto asset for IvoryPay withdrawal. Only USDC and USDT are allowed.',
-        );
-      }
-      const supportedNetwork = this.ivorypay['normalizeNetwork']
-        ? this.ivorypay['normalizeNetwork'](cryptoAsset, normalizedNetwork)
-        : normalizedNetwork;
-      if (!supportedNetwork) {
-        throw new BadRequestException(
-          `Unsupported network for ${cryptoAsset}: ${normalizedNetwork}. Please choose a supported network.`,
-        );
-      }
-      if (!cryptoAddress || cryptoAddress.trim().length < 10) {
-        throw new BadRequestException(
-          'Destination wallet address is required for crypto withdrawal',
-        );
-      }
-      if (!Number.isFinite(cryptoAmount) || cryptoAmount <= 0) {
-        throw new BadRequestException('Invalid crypto conversion amount');
-      }
-
-      const opts: any = {
-        reference,
-        amount: cryptoAmount,
-        crypto: cryptoAsset,
-        token: cryptoAsset,
-        cryptoAsset: cryptoAsset,
-        to_address: cryptoAddress,
-        address: cryptoAddress,
-        network: supportedNetwork,
-        metadata: {
-          user_id: withdrawal.userId,
-          reference,
-          cryptoAsset: cryptoAsset,
-          network: supportedNetwork,
-          conversion_snapshot: {
-            ...(snapshot ?? {}),
-            farmAmount: Number(withdrawal.amount ?? 0),
-            farmKesRate: Number(rate.farm_kes_rate ?? 1),
-            usdKesRate: Number(rate.usd_kes_rate ?? 150),
-            farmUsdRate: farmUsdRate,
-            cryptoCurrency: cryptoAsset,
-            cryptoAmount,
-            network: supportedNetwork,
-            conversionTimestamp: new Date().toISOString(),
-          },
-          settlement_usd: settlementUsd,
-        },
-      };
-
-      const resp = await this.ivorypay.createWithdrawal(opts);
-      const withdrawalId =
-        resp?.data?.id ||
-        resp?.providerTransactionId ||
-        resp?.providerReference ||
-        null;
-
-      if (transaction) {
-        const existingMetadata = (transaction.metadata as any) ?? {};
-        await this.prisma.transactions.update({
-          where: { id: transaction.id },
-          data: {
-            metadata: {
-              ...existingMetadata,
-              provider: 'ivorypay',
-              ivorypay_withdrawal_id: withdrawalId,
-              ivorypay_withdrawal_status: 'pending',
-              settlement_usd: settlementUsd,
-            },
-          },
-        });
-      }
-      // Leave finalization to webhook or manual reconciliation
-    } catch (e: any) {
-      if (e instanceof IvorypayPayoutOutcomeUnknownError) {
-        const latestTransaction = await this.prisma.transactions.findUnique({
-          where: { transaction_reference: reference },
-        });
-        if (latestTransaction) {
-          const latestMetadata = (latestTransaction.metadata as any) ?? {};
-          await this.prisma.transactions.update({
-            where: { id: latestTransaction.id },
-            data: {
-              metadata: {
-                ...latestMetadata,
-                provider: 'ivorypay',
-                ivorypay_withdrawal_status: 'unknown',
-                ivorypay_outcome_unknown_reason: e.message,
-              },
-            },
-          });
-        }
-        this.logger.warn(
-          `IvoryPay payout outcome is unknown for ${reference}; leaving wallet funds reserved for reconciliation`,
-        );
-        return;
-      }
-      await this.rejectWithdrawal(
-        reference,
-        e.message || 'Crypto withdrawal failed',
-      );
-    }
-  }
-
   // Called from webhook
   async markAsSuccess(reference: string) {
     const withdrawal = await this.prisma.withdrawal.findUnique({
@@ -1543,13 +1372,18 @@ export class WithdrawService {
       });
       if (claim.count !== 1) return false;
 
-      await tx.wallets.update({
-        where: { id: wallet.id },
-        data: {
-          balance: { decrement: amount },
-          locked_balance: { decrement: unlockAmount },
-        },
-      });
+      // Guarded debit: never takes balance or locked_balance below zero.
+      const debited = await tx.$executeRaw`
+        UPDATE wallets
+           SET balance = COALESCE(balance, 0) - ${amount}::numeric,
+               locked_balance = GREATEST(COALESCE(locked_balance, 0) - ${amount}::numeric, 0)
+         WHERE id = ${wallet.id}::uuid
+           AND COALESCE(balance, 0) >= ${amount}::numeric`;
+      if (debited !== 1) {
+        throw new BadRequestException(
+          `Wallet balance is insufficient to finalize withdrawal ${reference}`,
+        );
+      }
 
       if (transaction) {
         const existingMetadata =
@@ -1561,22 +1395,19 @@ export class WithdrawService {
             status: 'completed',
             processed_at: new Date(),
             description: 'Successful withdrawal',
-            metadata: withdrawal.method === 'CRYPTO'
-              ? provider === 'nowpayments'
-                ? {
-                    ...existingMetadata,
-                    nowpayments_payout_status: 'finished',
-                  }
+            metadata:
+              withdrawal.method === 'CRYPTO'
+                ? provider === 'nowpayments'
+                  ? {
+                      ...existingMetadata,
+                      nowpayments_payout_status: 'finished',
+                    }
+                  : { ...existingMetadata, legacy_status: 'success' }
                 : {
                     ...existingMetadata,
-                    provider: 'ivorypay',
-                    ivorypay_withdrawal_status: 'success',
-                  }
-              : {
-                  ...existingMetadata,
-                  provider: 'paystack',
-                  paystack_transfer_status: 'success',
-                },
+                    provider: 'paystack',
+                    paystack_transfer_status: 'success',
+                  },
           },
         });
 
@@ -1755,10 +1586,10 @@ export class WithdrawService {
       });
       if (claim.count !== 1) return false;
 
-      await tx.wallets.update({
-        where: { id: wallet.id },
-        data: { locked_balance: { decrement: unlockAmount } },
-      });
+      await tx.$executeRaw`
+        UPDATE wallets
+           SET locked_balance = GREATEST(COALESCE(locked_balance, 0) - ${amount}::numeric, 0)
+         WHERE id = ${wallet.id}::uuid`;
 
       if (transaction) {
         const metadata = (transaction.metadata as any) ?? {};
@@ -1772,16 +1603,15 @@ export class WithdrawService {
             : withdrawal.method === 'CRYPTO'
               ? {
                   ...metadata,
-                  provider: 'ivorypay',
-                  ivorypay_failure_reason: reason,
-                  ivorypay_withdrawal_status: 'failed',
+                  legacy_failure_reason: reason,
+                  legacy_status: 'failed',
                 }
-            : {
-                ...metadata,
-                provider: 'paystack',
-                paystack_failure_reason: reason,
-                paystack_transfer_status: 'failed',
-              };
+              : {
+                  ...metadata,
+                  provider: 'paystack',
+                  paystack_failure_reason: reason,
+                  paystack_transfer_status: 'failed',
+                };
         await tx.transactions.update({
           where: { id: transaction.id },
           data: {
@@ -1843,6 +1673,49 @@ export class WithdrawService {
     });
     if (!withdrawal) throw new BadRequestException('Withdrawal not found');
     return this.rejectWithdrawal(withdrawal.reference, reason);
+  }
+
+  /**
+   * Atomically reserves `amount` on the wallet inside `tx`. The availability
+   * check and the increment are one UPDATE, so concurrent requests cannot
+   * over-reserve. The row lock it takes also serialises the daily-limit check.
+   */
+  private async lockFundsInTx(
+    tx: any,
+    walletId: string,
+    userId: string,
+    amount: number,
+  ) {
+    const locked = await tx.$executeRaw`
+      UPDATE wallets
+         SET locked_balance = COALESCE(locked_balance, 0) + ${amount}::numeric
+       WHERE id = ${walletId}::uuid
+         AND COALESCE(is_frozen, false) = false
+         AND COALESCE(balance, 0) - COALESCE(locked_balance, 0) >= ${amount}::numeric`;
+    if (locked !== 1) {
+      throw new BadRequestException('Insufficient balance for this withdrawal');
+    }
+    const { maxCount, maxAmount } = withdrawalDailyLimits();
+    if (maxCount > 0 || maxAmount > 0) {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const recent = await tx.withdrawal.aggregate({
+        where: { userId, createdAt: { gte: since }, status: { not: 'FAILED' } },
+        _count: { _all: true },
+        _sum: { amount: true },
+      });
+      const count = Number(recent?._count?._all ?? 0);
+      const total = Number(recent?._sum?.amount ?? 0);
+      if (maxCount > 0 && count + 1 > maxCount) {
+        throw new BadRequestException(
+          `Daily withdrawal limit reached (${maxCount} withdrawals per 24 hours)`,
+        );
+      }
+      if (maxAmount > 0 && total + amount > maxAmount) {
+        throw new BadRequestException(
+          `Daily withdrawal amount limit is ${maxAmount.toLocaleString()} FARM per 24 hours`,
+        );
+      }
+    }
   }
 
   private formatMpesaNumber(phone: string | null) {

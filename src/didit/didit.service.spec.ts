@@ -93,7 +93,9 @@ describe('DiditService', () => {
 
     await expect(
       service.createSession('c0a80101-0000-4000-8000-000000000001'),
-    ).rejects.toThrow('Didit session creation failed');
+    ).rejects.toThrow(
+      'Didit rejected the workflow or session configuration. Check that the configured workflow exists, is published, and is a KYC workflow in the same application as the API key.',
+    );
 
     expect(errorLog).toHaveBeenCalledWith(
       'Didit session request returned HTTP 400: {"detail":"callback domain rejected","debug":"[redacted]"}',

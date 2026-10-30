@@ -12,13 +12,15 @@ export interface JwtPayload {
   jti: string;
 }
 
+import { requireJwtAccessSecret } from '../jwt-secret';
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(private cfg: ConfigService, private prisma: PrismaService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: cfg.get<string>('JWT_ACCESS_SECRET') || 'secret',
+      secretOrKey: requireJwtAccessSecret(cfg),
       passReqToCallback: true,
     });
   }

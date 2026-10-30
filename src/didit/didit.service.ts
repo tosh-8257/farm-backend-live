@@ -133,7 +133,17 @@ export class DiditService {
       this.logger.error(
         `Didit session request returned HTTP ${response.status}: ${upstreamDetail || '(empty response)'}`,
       );
-      throw new BadGatewayException('Didit session creation failed');
+      const message =
+        response.status === 401
+          ? 'Didit rejected the API key. Check that DIDIT_API_KEY is valid.'
+          : response.status === 403
+            ? 'Didit denied session creation. Check that the API key has write:sessions permission and belongs to the application that owns the workflow.'
+            : response.status === 400
+              ? 'Didit rejected the workflow or session configuration. Check that the configured workflow exists, is published, and is a KYC workflow in the same application as the API key.'
+              : response.status === 429
+                ? 'Didit is rate-limiting session creation. Wait briefly and try again.'
+                : `Didit session creation failed (HTTP ${response.status}). Check the backend logs for the sanitized provider response.`;
+      throw new BadGatewayException(message);
     }
 
     let session: unknown;

@@ -34,26 +34,15 @@ export class RolesGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest();
-    const authHeader = request.headers?.authorization || request.headers?.Authorization;
-    const token = this.extractToken(authHeader);
-
-    if (!token) {
+    // JwtGuard (passport-jwt + JwtStrategy) always runs before this guard and has
+    // already verified the token and loaded the user's current role from the DB.
+    // Re-verifying here and overwriting req.user would replace that fresh,
+    // DB-checked identity with stale token claims, so we only normalize it.
+    if (!request.user) {
       throw new UnauthorizedException('Authentication token is required');
     }
-
-    const secret = this.configService.get<string>('JWT_ACCESS_SECRET');
-    if (!secret) {
-      throw new UnauthorizedException('JWT access secret is not configured');
-    }
-
-    let user = request.user;
-    try {
-      const payload = await this.jwtService.verifyAsync(token, { secret });
-      user = this.normalizeUser(payload);
-      request.user = user;
-    } catch {
-      throw new UnauthorizedException('Invalid or expired access token');
-    }
+    const user = this.normalizeUser(request.user);
+    request.user = user;
 
     const requiredRoles = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [
       context.getHandler(),
@@ -100,18 +89,12 @@ export class RolesGuard implements CanActivate {
     return true;
   }
 
-  private extractToken(authHeader?: string): string | null {
-    if (!authHeader) return null;
-    const [type, token] = authHeader.split(' ');
-    return type === 'Bearer' && token ? token : null;
-  }
-
   private normalizeUser(payload: any) {
     const role = payload.role || payload.user_role || 'user';
     return {
       ...payload,
-      id: payload.sub || payload.id || payload.userId,
-      userId: payload.sub || payload.id || payload.userId,
+      id: payload.id || payload.sub || payload.userId,
+      userId: payload.id || payload.sub || payload.userId,
       role: String(role).toLowerCase(),
     };
   }

@@ -1,6 +1,9 @@
 import { Controller, Get, Post, Put, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, IsBoolean, IsNumber, IsNotEmpty, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsBoolean, IsNumber, IsNotEmpty, MaxLength, IsInt, IsDateString, Min, IsEmail } from 'class-validator';
+import { Type } from 'class-transformer';
+import { ForbiddenException } from '@nestjs/common';
+import { CreateWithdrawDto } from '../withdraw/dto/create-withdraw.dto';
 import { AdminService } from './admin.service';
 import { WithdrawService } from '../withdraw/withdraw.service';
 import { NotFoundException } from '@nestjs/common';
@@ -73,9 +76,48 @@ class UpdateUserDto {
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsString() country?: string;
-  @IsOptional() @IsString() role?: string;
+  @IsOptional() @IsIn(['user', 'merchant', 'admin', 'super_admin']) role?: string;
   @IsOptional() @IsBoolean() is_active?: boolean;
   @IsOptional() @IsBoolean() is_suspended?: boolean;
+}
+
+class UpdateFeeDto { @IsNotEmpty() @IsString() @MaxLength(100) value!: string; }
+
+class UpdateSuperadminDto {
+  @IsOptional() @IsString() @MaxLength(100) first_name?: string;
+  @IsOptional() @IsString() @MaxLength(100) last_name?: string;
+  @IsOptional() @IsEmail() email?: string;
+  @IsOptional() @IsString() @MaxLength(32) phone?: string;
+  @IsOptional() @IsString() @MaxLength(100) country?: string;
+  @IsOptional() @IsBoolean() is_active?: boolean;
+}
+
+class CreateProjectDto {
+  @IsNotEmpty() @IsString() @MaxLength(255) project_name!: string;
+  @IsOptional() @IsString() @MaxLength(100) category?: string;
+  @IsOptional() @IsString() @MaxLength(10000) description?: string;
+  @IsOptional() @IsString() @MaxLength(2048) banner_image?: string;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) target_amount?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) minimum_investment?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() roi_percent?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) duration_months?: number;
+  @IsOptional() @IsString() @MaxLength(50) status?: string;
+  @IsOptional() @IsDateString() starts_at?: string;
+  @IsOptional() @IsDateString() ends_at?: string;
+}
+
+class UpdateProjectDto {
+  @IsOptional() @IsString() @MaxLength(255) project_name?: string;
+  @IsOptional() @IsString() @MaxLength(100) category?: string;
+  @IsOptional() @IsString() @MaxLength(10000) description?: string;
+  @IsOptional() @IsString() @MaxLength(2048) banner_image?: string;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) target_amount?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) minimum_investment?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() roi_percent?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) duration_months?: number;
+  @IsOptional() @IsString() @MaxLength(50) status?: string;
+  @IsOptional() @IsDateString() starts_at?: string;
+  @IsOptional() @IsDateString() ends_at?: string;
 }
 
 class SendNotificationDto {
@@ -147,7 +189,13 @@ export class AdminController {
   @Permissions('admin:write')
   @Patch('users/:id/status')      userStatus(@Param('id') id: string, @Body() dto: UserStatusDto, @CurrentUser() u: any) { return this.svc.updateUserStatus(id, dto, u.id); }
   @Permissions('admin:write')
-  @Patch('users/:id')             updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto, @CurrentUser() u: any) { return this.svc.updateUser(id, dto, u.id); }
+  @Patch('users/:id')             updateUser(@Param('id') id: string, @Body() dto: UpdateUserDto, @CurrentUser() u: any) {
+    // Only a SUPER_ADMIN may change roles (prevents admin -> super_admin escalation).
+    if (dto.role !== undefined && String(u?.role ?? '').toLowerCase() !== UserRole.SUPER_ADMIN) {
+      throw new ForbiddenException('Only a super admin can change user roles');
+    }
+    return this.svc.updateUser(id, dto, u.id);
+  }
   @Permissions('admin:write')
   @Delete('users/:id')            deleteUser(@Param('id') id: string, @CurrentUser() u: any) { return this.svc.deleteUser(id, u.id); }
   @Permissions('admin:read')
@@ -200,7 +248,7 @@ export class AdminController {
   @Permissions('admin:read')
   @Get('fees')                    fees() { return this.svc.getFees(); }
   @Permissions('admin:write')
-  @Put('fees/:id')                updateFee(@Param('id') id: string, @Body() dto: { value: string }, @CurrentUser() u: any) { return this.svc.updateFee(id, dto.value, u.id); }
+  @Put('fees/:id')                updateFee(@Param('id') id: string, @Body() dto: UpdateFeeDto, @CurrentUser() u: any) { return this.svc.updateFee(id, dto.value, u.id); }
   @Permissions('admin:write')
   @Post('payouts/:id/process')    processPayout(@Param('id') id: string, @CurrentUser() u: any) { return this.svc.processPayout(id, u.id, 'completed'); }
   @Permissions('admin:write')
@@ -232,9 +280,9 @@ export class AdminController {
   @Permissions('admin:read')
   @Get('audit-logs')              auditLogs(@Query() q: any) { return this.svc.getAuditLogs(q); }
   @Permissions('admin:write')
-  @Post('investments')            createProject(@CurrentUser() u: any, @Body() dto: any) { return this.svc.createProject(u.id, dto); }
+  @Post('investments')            createProject(@CurrentUser() u: any, @Body() dto: CreateProjectDto) { return this.svc.createProject(u.id, dto); }
   @Permissions('admin:write')
-  @Put('investments/:id')         updateProject(@Param('id') id: string, @Body() dto: any) { return this.svc.updateProject(id, dto); }
+  @Put('investments/:id')         updateProject(@Param('id') id: string, @Body() dto: UpdateProjectDto) { return this.svc.updateProject(id, dto); }
 
   // ── Audit Dashboard ──────────────────────────────────────────────────────────
   @Permissions('admin:read')
@@ -300,7 +348,7 @@ export class AdminController {
   @UseGuards(JwtGuard, RolesGuard)
   @Roles(UserRole.SUPER_ADMIN)
   @Post('wallet/withdraw')
-  async withdrawSuperadminFunds(@CurrentUser() u: any, @Body() dto: any) {
+  async withdrawSuperadminFunds(@CurrentUser() u: any, @Body() dto: CreateWithdrawDto) {
     return this.svc.superadminWithdraw(u.id, dto);
   }
 
@@ -329,7 +377,7 @@ export class AdminController {
   @Permissions('admin:write')
   @Roles(UserRole.SUPER_ADMIN)
   @Patch('superadmin/:id')
-  updateSuperadmin(@Param('id') id: string, @Body() dto: any, @CurrentUser() u: any) {
+  updateSuperadmin(@Param('id') id: string, @Body() dto: UpdateSuperadminDto, @CurrentUser() u: any) {
     return this.svc.updateSuperadmin(id, dto, u.id);
   }
 

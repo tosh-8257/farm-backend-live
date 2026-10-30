@@ -3,17 +3,22 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { QrService } from '../qr/qr.service';
+import { CacheService } from '../common/cache/cache.service';
 import { paginationParams, paginate } from '../common/utils/pagination.util';
 import { randomBytes } from 'crypto';
 
 @Injectable()
 export class MerchantsService {
-  constructor(private prisma: PrismaService, private qrService: QrService) {}
+  constructor(
+    private prisma: PrismaService,
+    private qrService: QrService,
+    private cache: CacheService,
+  ) {}
 
   async apply(userId: string, dto: {
-    business_name: string; business_type: string;
-    business_email: string; business_phone: string;
-    country: string; city: string;
+    business_name: string; business_type?: string;
+    business_email?: string; business_phone?: string;
+    country?: string; city?: string;
   }) {
     const existing = await this.prisma.merchants.findFirst({ where: { user_id: userId } });
     if (existing) {
@@ -30,6 +35,7 @@ export class MerchantsService {
           approved_at: null,
         },
       });
+      await this.invalidateMerchantCaches(userId);
       return { data: merchant, message: 'Application resubmitted. Pending review.' };
     }
 
@@ -40,6 +46,7 @@ export class MerchantsService {
         status: 'pending',
       },
     });
+    await this.invalidateMerchantCaches(userId);
     return { data: merchant, message: 'Application submitted. Pending review.' };
   }
 
@@ -73,6 +80,10 @@ export class MerchantsService {
     if (!user || user.kyc_status !== 'verified' || Number(user.kyc_level || 0) < 3) {
       throw new ForbiddenException('Full KYC verification is required to access the merchant dashboard');
     }
+
+    const cacheKey = `merchant-dashboard:${userId}`;
+    const cached = await this.cache.cacheGet<any>(cacheKey);
+    if (cached) return cached;
 
     const wallet = await this.prisma.wallets.findFirst({
       where: { user_id: userId, is_active: true, wallet_type: 'user' },
@@ -211,7 +222,7 @@ export class MerchantsService {
       return txn;
     }));
 
-    return {
+    const payload = {
       data: {
         merchant: {
           id: merchant.id, business_name: merchant.business_name,
@@ -236,10 +247,19 @@ export class MerchantsService {
         recent_transactions: enrichedRecent,
       },
     };
+
+    await this.cache.cacheSet(cacheKey, payload, 60);
+    return payload;
   }
 
   async getMyMerchant(userId: string) {
-    return { data: await this.getMerchantByUser(userId) };
+    const cacheKey = `merchant-profile:${userId}`;
+    const cached = await this.cache.cacheGet<any>(cacheKey);
+    if (cached) return cached;
+
+    const payload = { data: await this.getMerchantByUser(userId) };
+    await this.cache.cacheSet(cacheKey, payload, 60);
+    return payload;
   }
 
   async getTransactions(userId: string, query: any) {
@@ -247,8 +267,12 @@ export class MerchantsService {
     if (merchant.status !== 'approved') {
       throw new ForbiddenException('Merchant application is pending approval');
     }
-    const wallet = await this.prisma.wallets.findFirst({ where: { user_id: userId } });
     const { skip, take, page, limit } = paginationParams(query.page, query.limit);
+    const cacheKey = `merchant-transactions:${userId}:${page}:${limit}`;
+    const cached = await this.cache.cacheGet<any>(cacheKey);
+    if (cached) return cached;
+
+    const wallet = await this.prisma.wallets.findFirst({ where: { user_id: userId } });
     const [items, total] = await Promise.all([
       this.prisma.transactions.findMany({
         where: { receiver_wallet_id: wallet?.id, transaction_type: 'merchant_payment' },
@@ -258,7 +282,7 @@ export class MerchantsService {
         where: { receiver_wallet_id: wallet?.id, transaction_type: 'merchant_payment' },
       }),
     ]);
-    return {
+    const payload = {
       data: items.map((t) => {
         const metadata =
           t.metadata && typeof t.metadata === 'object'
@@ -278,6 +302,9 @@ export class MerchantsService {
       }),
       meta: paginate(total, page, limit),
     };
+
+    await this.cache.cacheSet(cacheKey, payload, 45);
+    return payload;
   }
 
   async requestPayout(userId: string, dto: {
@@ -296,6 +323,7 @@ export class MerchantsService {
         account_number: dto.account_number, status: 'pending',
       },
     });
+    await this.invalidateMerchantCaches(userId);
     return { data: payout, message: 'Payout request submitted' };
   }
 
@@ -305,16 +333,23 @@ export class MerchantsService {
       throw new ForbiddenException('Merchant application is pending approval');
     }
     const { skip, take, page, limit } = paginationParams(query.page, query.limit);
+    const cacheKey = `merchant-payouts:${userId}:${page}:${limit}`;
+    const cached = await this.cache.cacheGet<any>(cacheKey);
+    if (cached) return cached;
+
     const [items, total] = await Promise.all([
       this.prisma.merchant_payouts.findMany({
         where: { merchant_id: merchant.id }, skip, take, orderBy: { created_at: 'desc' },
       }),
       this.prisma.merchant_payouts.count({ where: { merchant_id: merchant.id } }),
     ]);
-    return {
+    const payload = {
       data: items.map((p) => ({ ...p, amount: Number(p.amount) })),
       meta: paginate(total, page, limit),
     };
+
+    await this.cache.cacheSet(cacheKey, payload, 45);
+    return payload;
   }
 
   async regenerateQr(userId: string) {
@@ -322,7 +357,9 @@ export class MerchantsService {
     if (merchant.status !== 'approved') {
       throw new ForbiddenException('Merchant application is pending approval');
     }
-    return this.qrService.generateMerchantQr(merchant.id);
+    const result = await this.qrService.generateMerchantQr(merchant.id);
+    await this.invalidateMerchantCaches(userId);
+    return result;
   }
 
   async getMerchantQr(userId: string) {
@@ -330,15 +367,31 @@ export class MerchantsService {
     if (merchant.status !== 'approved') {
       throw new ForbiddenException('Merchant application is pending approval');
     }
-    if (!merchant.qr_code) {
-      return this.qrService.generateMerchantQr(merchant.id);
-    }
-    return this.qrService.getMerchantQr(merchant.id);
+    const cacheKey = `merchant-qr:${userId}`;
+    const cached = await this.cache.cacheGet<any>(cacheKey);
+    if (cached) return cached;
+
+    const result = !merchant.qr_code
+      ? await this.qrService.generateMerchantQr(merchant.id)
+      : await this.qrService.getMerchantQr(merchant.id);
+
+    await this.cache.cacheSet(cacheKey, result, 120);
+    return result;
   }
 
   private async getMerchantByUser(userId: string) {
     const m = await this.prisma.merchants.findFirst({ where: { user_id: userId } });
     if (!m) throw new BadRequestException('Merchant account not found. Please apply first.');
     return m;
+  }
+
+  private async invalidateMerchantCaches(userId: string) {
+    await Promise.all([
+      this.cache.cacheInvalidatePattern(`merchant-dashboard:${userId}`),
+      this.cache.cacheInvalidatePattern(`merchant-profile:${userId}`),
+      this.cache.cacheInvalidatePattern(`merchant-transactions:${userId}:*`),
+      this.cache.cacheInvalidatePattern(`merchant-payouts:${userId}:*`),
+      this.cache.cacheInvalidatePattern(`merchant-qr:${userId}`),
+    ]);
   }
 }

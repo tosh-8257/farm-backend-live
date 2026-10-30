@@ -2,5 +2,6 @@ import { createParamDecorator, ExecutionContext } from '@nestjs/common';
 
 export const CurrentUser = createParamDecorator((data: unknown, ctx: ExecutionContext) => {
   const request = ctx.switchToHttp().getRequest();
-  return request.user || { id: request.headers['x-user-id'] || null };
+  // Never trust a client-supplied x-user-id header as identity.
+  return request.user || { id: null };
 });

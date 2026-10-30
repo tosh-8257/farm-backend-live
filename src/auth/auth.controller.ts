@@ -27,6 +27,12 @@ import type { Request } from 'express';
 import { Throttle } from '@nestjs/throttler';
 
 import { AuthService } from './auth.service';
+import {
+  DeviceTokenDto,
+  ResendEmailVerificationDto,
+  ResendOtpDto,
+  ResolveLoginEmailDto,
+} from './dto/auth-misc.dto';
 
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -79,7 +85,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 20,
-      ttl: 60,
+      ttl: 60_000,
       generateKey: authThrottleKey,
     },
   })
@@ -96,9 +102,9 @@ export class AuthController {
   @Get('registration-availability')
   @Throttle({
     default: {
-      limit: 20,
-      ttl: 60,
-      generateKey: authThrottleKey,
+      // Keyed by IP only so enumeration cannot rotate identifiers for fresh buckets.
+      limit: 10,
+      ttl: 60_000,
     },
   })
   @ApiOperation({
@@ -121,7 +127,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 60,
+      ttl: 60_000,
       generateKey: authThrottleKey,
     },
   })
@@ -152,7 +158,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 60,
+      ttl: 60_000,
     },
   })
   @ApiOperation({
@@ -177,17 +183,14 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 3,
-      ttl: 60,
+      ttl: 60_000,
     },
   })
   @ApiOperation({
     summary: 'Resend OTP',
   })
   async resendOtp(
-    @Body()
-    body: {
-      phone: string;
-    },
+    @Body() body: ResendOtpDto,
   ) {
     
     const user =
@@ -218,7 +221,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 300,
+      ttl: 300_000,
       generateKey: authThrottleKey,
     },
   })
@@ -236,7 +239,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 300,
+      ttl: 300_000,
       generateKey: authThrottleKey,
     },
   })
@@ -251,7 +254,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 300,
+      ttl: 300_000,
       generateKey: authThrottleKey,
     },
   })
@@ -263,7 +266,7 @@ export class AuthController {
   @Public()
   @Post('password-reset/complete')
   @HttpCode(HttpStatus.OK)
-  @Throttle({ default: { limit: 5, ttl: 300 } })
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @ApiOperation({ summary: 'Synchronize a completed Firebase password reset' })
   completePasswordReset(@Body() dto: AdminPasswordResetCompleteDto) {
     return this.authService.completePasswordReset(dto);
@@ -275,7 +278,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 300,
+      ttl: 300_000,
     },
   })
   @ApiOperation({ summary: 'Reset password using OTP' })
@@ -299,10 +302,7 @@ export class AuthController {
   })
   @ApiOperation({ summary: 'Resend email verification link' })
   resendEmailVerification(
-    @Body()
-    body: {
-      email: string;
-    },
+    @Body() body: ResendEmailVerificationDto,
   ) {
     return this.authService.resendEmailVerification(body.email);
   }
@@ -330,7 +330,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 60,
+      ttl: 60_000,
       generateKey: authThrottleKey,
     },
   })
@@ -362,7 +362,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 60,
+      ttl: 60_000,
       generateKey: authThrottleKey,
     },
   })
@@ -386,14 +386,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Throttle({
     default: {
-      limit: 10,
-      ttl: 60,
-      generateKey: authThrottleKey,
+      // Keyed by IP only so enumeration cannot rotate identifiers for fresh buckets.
+      limit: 5,
+      ttl: 60_000,
     },
   })
   @ApiOperation({ summary: 'Resolve a FARM phone or username to its login email' })
   resolveLoginEmail(
-    @Body() body: { identifier: string },
+    @Body() body: ResolveLoginEmailDto,
   ) {
     return this.authService.resolveLoginEmail(body.identifier);
   }
@@ -424,7 +424,7 @@ export class AuthController {
   @Throttle({
     default: {
       limit: 5,
-      ttl: 60,
+      ttl: 60_000,
       generateKey: authThrottleKey,
     },
   })
@@ -521,7 +521,7 @@ export class AuthController {
   @ApiOperation({ summary: 'Register a device token for push notifications' })
   async registerDeviceToken(
     @CurrentUser() user: any,
-    @Body() body: { token: string; platform?: string },
+    @Body() body: DeviceTokenDto,
   ) {
     return this.authService.registerDeviceToken(user.id, body.token, body.platform);
   }

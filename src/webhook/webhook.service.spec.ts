@@ -174,6 +174,56 @@ describe('WebhookService Paystack deposit processing', () => {
   });
 });
 
+describe('WebhookService NOWPayments deposits', () => {
+  it('credits a deposit after the authenticated provider status is finished', async () => {
+    const finalizeSuccessfulDeposit = jest.fn().mockResolvedValue(true);
+    const transaction = {
+      id: 'transaction-1',
+      transaction_type: 'deposit',
+      transaction_reference: 'deposit-reference',
+      metadata: {
+        provider: 'nowpayments',
+        amount_usd: 2,
+        pay_currency: 'btc',
+      },
+    };
+    const service = Object.create(WebhookService.prototype) as any;
+    service.prisma = {
+      transactions: {
+        findFirst: jest.fn().mockResolvedValue(transaction),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    service.nowpayments = {
+      getPayment: jest.fn().mockResolvedValue({
+        payment_id: '12345',
+        order_id: 'deposit-reference',
+        payment_status: 'finished',
+        price_amount: 2,
+        price_currency: 'usd',
+        pay_currency: 'btc',
+      }),
+    };
+    service.depositService = { finalizeSuccessfulDeposit };
+
+    await expect(
+      service.handleNowpaymentsWebhook({
+        payment_id: '12345',
+        order_id: 'deposit-reference',
+      }),
+    ).resolves.toEqual({
+      received: true,
+      processed: true,
+      status: 'finished',
+    });
+
+    expect(service.nowpayments.getPayment).toHaveBeenCalledWith('12345');
+    expect(finalizeSuccessfulDeposit).toHaveBeenCalledWith(
+      'deposit-reference',
+    );
+  });
+});
+
 describe('WebhookService IvoryPay webhook processing', () => {
   it('validates crypto webhook amounts against USD metadata, not the FARM credit', () => {
     const service = Object.create(WebhookService.prototype) as WebhookService;

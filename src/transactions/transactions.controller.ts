@@ -14,7 +14,7 @@ import { Throttle } from '@nestjs/throttler';
 export class TransactionsController {
   constructor(private readonly svc: TransactionsService) {}
   @Permissions('transactions:read')
-  @Throttle({ default: { limit: 60, ttl: 60 } })
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @Get()      findAll(@CurrentUser() u: any, @Query() q: any) { return this.svc.findAll(u.id, q); }
 
   @Permissions('transactions:read')

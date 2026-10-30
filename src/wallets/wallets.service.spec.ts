@@ -16,7 +16,10 @@ describe('WalletsService transaction history', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {
+        cacheGet: jest.fn().mockResolvedValue(null),
+        cacheSet: jest.fn().mockResolvedValue(undefined),
+      } as any,
       {} as any,
     );
 

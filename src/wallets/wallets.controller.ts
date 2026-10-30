@@ -57,7 +57,7 @@ export class WalletsController {
   }
 
   @Permissions('wallet:read')
-  @Throttle({ default: { limit: 60, ttl: 60 } })
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
   @Get('transactions')
   @ApiOperation({ summary: 'List my transactions' })
   transactions(@CurrentUser() u: any, @Query() q: any) {

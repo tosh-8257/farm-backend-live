@@ -7,7 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "prestart": "echo 'Skipping migrations for now'",
-    "build": "node ./node_modules/prisma/build/index.js generate && nest build --builder tsc && node ./scripts/ensure-render-entrypoint.js",
+    "build": "node ./node_modules/prisma/build/index.js generate && nest build && node ./scripts/ensure-render-entrypoint.js",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1055.0",
-    "@nestjs/bull": "^11.0.5",
+    "@nestjs/bull": "^11.0.4",
     "@nestjs/cli": "^11.0.21",
     "@nestjs/common": "^11.1.24",
     "@nestjs/config": "^4.0.4",
@@ -46,7 +46,7 @@
     "axios": "^1.16.1",
     "bcrypt": "^5.1.1",
     "bull": "^4.16.5",
-    "bullmq": "^6.0.10",
+    "bullmq": "^6.5.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "cloudinary": "^2.10.0",
@@ -76,7 +76,9 @@
     "@mapbox/node-pre-gyp": {
       "tar": "^7.5.16"
     },
-    "js-yaml": "^5.2.3",
+    "bull": {
+      "uuid": "^11.1.1"
+    },
     "@google-cloud/storage": {
       "uuid": "^11.1.1"
     },
@@ -114,6 +116,7 @@
     "eslint": "^10.6.0",
     "jest": "^30.4.2",
     "node-gyp": "^12.4.0",
+    "node-pre-gyp": "^0.17.0",
     "nodemon": "^3.1.14",
     "prettier": "^3.8.3",
     "prisma": "^6.19.3",
@@ -148,6 +151,6 @@
     "testEnvironment": "node"
   },
   "engines": {
-    "node": ">=20.0.0 <25.0.0"
+    "node": "20.x"
   }
 }

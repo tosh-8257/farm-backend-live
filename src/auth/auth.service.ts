@@ -1029,6 +1029,8 @@ if (new Date() > expiryDate) {
   }
 
   // ── Refresh ──────────────────────────────────────────────────────────────────
+  private static readonly REFRESH_RACE_GRACE_MS = 30_000;
+
   async refresh(userId: string, rawRefreshToken: string, ip?: string) {
     // Match the presented token to its own active session. This prevents a
     // refresh on one device from consuming another device's session.
@@ -1083,6 +1085,19 @@ if (new Date() > expiryDate) {
       },
     });
     if (claimed.count !== 1) {
+      // Lost the race to another request presenting the same token. If that
+      // happened moments ago it is almost always the same client retrying or
+      // refreshing twice in parallel (app resume, two tabs), not theft, so do
+      // not wipe every session; just reject this duplicate request.
+      const current = await this.prisma.user_sessions.findUnique({
+        where: { id: session.id },
+        select: { used_at: true },
+      });
+      const usedAt = current?.used_at ? new Date(current.used_at).getTime() : 0;
+      if (usedAt && Date.now() - usedAt < AuthService.REFRESH_RACE_GRACE_MS) {
+        await this.logSecurityEvent(userId, 'REFRESH_RACE', 'Concurrent refresh with the same token rejected', 'low', ip);
+        throw new UnauthorizedException('Refresh already in progress. Retry with the latest token.');
+      }
       await this.handleTokenTheft(userId, session, ip);
       throw new UnauthorizedException('Refresh token has been compromised. All sessions revoked.');
     }

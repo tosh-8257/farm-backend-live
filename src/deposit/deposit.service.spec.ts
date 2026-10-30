@@ -7,6 +7,7 @@ import { WebsocketGateway } from '../websocket/websocket.gateway';
 import { CacheService } from '../common/cache/cache.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CurrencyConversionService } from '../currency/currency-conversion.service';
+import { NowpaymentsService } from '../nowpayments/nowpayments.service';
 
 describe('DepositService', () => {
   let service: DepositService;
@@ -17,6 +18,7 @@ describe('DepositService', () => {
   let cache: any;
   let notifications: any;
   let currencyConversion: any;
+  let nowpayments: any;
 
   beforeEach(async () => {
     prisma = {
@@ -41,6 +43,17 @@ describe('DepositService', () => {
     cache = {};
     notifications = {};
     currencyConversion = {};
+    nowpayments = {
+      getAvailableCurrencies: jest.fn().mockResolvedValue(['btc']),
+      getMinimumPaymentAmount: jest.fn().mockResolvedValue({
+        currency: 'btc',
+        minimumAmount: 0.00001,
+        minimumUsd: 1.5,
+      }),
+      estimateAmount: jest.fn().mockResolvedValue(0.00005),
+      createPayment: jest.fn(),
+      getPayment: jest.fn(),
+    };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -52,6 +65,7 @@ describe('DepositService', () => {
         { provide: CacheService, useValue: cache },
         { provide: NotificationsService, useValue: notifications },
         { provide: CurrencyConversionService, useValue: currencyConversion },
+        { provide: NowpaymentsService, useValue: nowpayments },
       ],
     }).compile();
 
@@ -77,6 +91,27 @@ describe('DepositService', () => {
       }),
     ).rejects.toThrow('dedicated /api/v1/crypto/deposit endpoint');
     expect(prisma.deposit.create).not.toHaveBeenCalled();
+  });
+
+  it('returns a server-side NOWPayments estimate and effective minimum', async () => {
+    const result = await service.getNowpaymentsCryptoEstimate('BTC', '2');
+
+    expect(nowpayments.estimateAmount).toHaveBeenCalledWith(2, 'usd', 'btc');
+    expect(result.data).toEqual({
+      currency: 'btc',
+      priceAmount: 2,
+      estimatedAmount: 0.00005,
+      minimumAmount: 0.00001,
+      minimumUsd: 1.5,
+      minimumDepositUsd: 2,
+    });
+  });
+
+  it('rejects estimates for unsupported NOWPayments currencies', async () => {
+    await expect(
+      service.getNowpaymentsCryptoEstimate('doge', 2),
+    ).rejects.toThrow('The selected cryptocurrency is not currently available');
+    expect(nowpayments.estimateAmount).not.toHaveBeenCalled();
   });
 
   it('charges card deposits only the amount entered by the user', async () => {

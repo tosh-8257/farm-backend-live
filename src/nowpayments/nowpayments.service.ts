@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  BadRequestException,
   HttpException,
   Injectable,
   Logger,
@@ -8,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import * as QRCode from 'qrcode';
+import { createHmac } from 'crypto';
 
 type NowPaymentsRecord = Record<string, any>;
 
@@ -106,7 +108,9 @@ export class NowpaymentsService {
           (error.response?.data as any)?.message ??
           (error.response?.data as any)?.status;
         this.logger.error(
-          `NOWPayments ${method.toUpperCase()} ${path} failed${status ? ` (HTTP ${status})` : ''}`,
+          `NOWPayments ${method.toUpperCase()} ${path} failed${status ? ` (HTTP ${status})` : ''}${
+            typeof providerMessage === 'string' ? `: ${providerMessage.slice(0, 300)}` : ''
+          }`,
         );
         if (status && status >= 400 && status < 500) {
           throw new BadGatewayException(
@@ -133,12 +137,16 @@ export class NowpaymentsService {
         'NOWPayments returned an invalid currency list',
       );
     }
-    return [...new Set(
-      currencies
-        .filter((currency): currency is string => typeof currency === 'string')
-        .map((currency) => currency.trim().toLowerCase())
-        .filter((currency) => /^[a-z0-9]{2,20}$/.test(currency)),
-    )].sort();
+    return [
+      ...new Set(
+        currencies
+          .filter(
+            (currency): currency is string => typeof currency === 'string',
+          )
+          .map((currency) => currency.trim().toLowerCase())
+          .filter((currency) => /^[a-z0-9]{2,20}$/.test(currency)),
+      ),
+    ].sort();
   }
 
   async getMinimumPaymentAmount(currency: string): Promise<{
@@ -227,6 +235,39 @@ export class NowpaymentsService {
       expiration_estimate:
         data.expiration_estimate_date ?? data.expiration_estimate ?? null,
       qr_url: await QRCode.toDataURL(address),
+    };
+  }
+
+  /**
+   * Validates a USD price against NOWPayments' minimum for the asset and
+   * returns a crypto estimate. Used for in-app checkout previews.
+   */
+  async estimateCheckout(priceUsd: number, payCurrency: string) {
+    const currency = payCurrency?.trim().toLowerCase();
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0 || priceUsd > 100_000) {
+      throw new BadRequestException('Enter a valid USD amount');
+    }
+    if (!currency || !/^[a-z0-9]{2,20}$/.test(currency)) {
+      throw new BadRequestException('Choose a valid cryptocurrency');
+    }
+    const available = await this.getAvailableCurrencies();
+    if (!available.includes(currency)) {
+      throw new BadRequestException(
+        'The selected cryptocurrency is not currently available',
+      );
+    }
+    const [estimated, minimum] = await Promise.all([
+      this.estimateAmount(priceUsd, 'usd', currency),
+      this.getMinimumPaymentAmount(currency),
+    ]);
+    return {
+      price_amount: Number(priceUsd.toFixed(2)),
+      price_currency: 'usd',
+      pay_currency: currency,
+      estimated_amount: estimated,
+      minimum_amount: minimum.minimumAmount,
+      minimum_usd: minimum.minimumUsd,
+      meets_minimum: estimated >= minimum.minimumAmount,
     };
   }
 
@@ -360,9 +401,10 @@ export class NowpaymentsService {
     method: 'get' | 'post',
     path: string,
     body?: Record<string, unknown>,
+    params?: Record<string, string | number | boolean>,
   ): Promise<T> {
     const token = await this.getPayoutToken();
-    return this.request<T>(method, path, body, undefined, {
+    return this.request<T>(method, path, body, params, {
       Authorization: `Bearer ${token}`,
     });
   }
@@ -410,5 +452,122 @@ export class NowpaymentsService {
       ),
       'payout status check',
     );
+  }
+
+  /**
+   * Validates a payout address with NOWPayments. Returns false only when
+   * NOWPayments says the address is invalid (HTTP 400); other failures throw
+   * so funds are never locked against an unverified address.
+   */
+  async validatePayoutAddress(
+    address: string,
+    currency: string,
+    extraId?: string | null,
+  ): Promise<boolean> {
+    try {
+      await this.http.request({
+        method: 'post',
+        url: '/payout/validate-address',
+        data: {
+          address,
+          currency: currency.toLowerCase(),
+          ...(extraId ? { extra_id: extraId } : {}),
+        },
+        headers: {
+          'x-api-key': this.getApiKey(),
+          'Content-Type': 'application/json',
+        },
+      });
+      return true;
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 400) {
+        return false;
+      }
+      this.logger.error(
+        `NOWPayments POST /payout/validate-address failed${
+          axios.isAxiosError(error) && error.response?.status
+            ? ` (HTTP ${error.response.status})`
+            : ''
+        }`,
+      );
+      throw new BadGatewayException(
+        'Could not verify the destination address right now; please try again',
+      );
+    }
+  }
+
+  /** Finds an existing payout by our unique_external_id (the withdrawal reference). */
+  async findPayoutByExternalId(
+    externalId: string,
+    maxPages = 5,
+  ): Promise<NowPaymentsRecord | null> {
+    for (let page = 0; page < maxPages; page++) {
+      const response: any = await this.payoutRequest(
+        'get',
+        '/payout',
+        undefined,
+        {
+          limit: 100,
+          page,
+          order: 'desc',
+        },
+      );
+      const items: any[] = Array.isArray(response)
+        ? response
+        : (response?.payouts ?? response?.data ?? []);
+      if (!Array.isArray(items) || items.length === 0) return null;
+      for (const item of items) {
+        const withdrawals: any[] = Array.isArray(item?.withdrawals)
+          ? item.withdrawals
+          : [item];
+        const match = withdrawals.find(
+          (w) => String(w?.unique_external_id ?? '') === externalId,
+        );
+        if (match) {
+          return {
+            ...match,
+            id: String(
+              item?.batch_withdrawal_id ??
+                match.batch_withdrawal_id ??
+                item?.id ??
+                match.id,
+            ),
+            status: match.status ?? item?.status,
+          } as NowPaymentsRecord;
+        }
+      }
+      if (items.length < 100) return null;
+    }
+    return null;
+  }
+
+  /**
+   * TOTP code for automatic payout verification, from NOWPAYMENTS_2FA_SECRET
+   * (base32 Google Authenticator secret). Returns null when not configured.
+   */
+  generatePayoutVerificationCode(now = Date.now()): string | null {
+    const secret = this.config
+      .get<string>('NOWPAYMENTS_2FA_SECRET')
+      ?.replace(/\s+/g, '')
+      .toUpperCase();
+    if (!secret) return null;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    let bits = '';
+    for (const ch of secret.replace(/=+$/, '')) {
+      const v = alphabet.indexOf(ch);
+      if (v < 0) return null;
+      bits += v.toString(2).padStart(5, '0');
+    }
+    const bytes: number[] = [];
+    for (let i = 0; i + 8 <= bits.length; i += 8)
+      bytes.push(parseInt(bits.slice(i, i + 8), 2));
+    const counter = Buffer.alloc(8);
+    counter.writeBigUInt64BE(BigInt(Math.floor(now / 1000 / 30)));
+    const hmac = createHmac('sha1', Buffer.from(bytes))
+      .update(counter)
+      .digest();
+    const offset = hmac[hmac.length - 1] & 0xf;
+    const code = (hmac.readUInt32BE(offset) & 0x7fffffff) % 1_000_000;
+    return code.toString().padStart(6, '0');
   }
 }

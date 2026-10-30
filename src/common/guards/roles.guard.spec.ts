@@ -25,6 +25,7 @@ describe('RolesGuard', () => {
       switchToHttp: () => ({
         getRequest: () => ({
           headers: { authorization: 'Bearer token' },
+          user: { id: 'admin-1', role: 'admin' },
           body: {},
           params: {},
           query: {},
@@ -65,6 +66,7 @@ describe('RolesGuard', () => {
 
     const req: any = {
       headers: { authorization: 'Bearer test-token' },
+      user: { id: 'user-1', role: 'user' },
       body: {},
       params: {},
       query: {},
@@ -77,5 +79,16 @@ describe('RolesGuard', () => {
     } as unknown as ExecutionContext;
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('rejects when JwtGuard has not populated req.user', async () => {
+    const reflector = { getAllAndOverride: jest.fn() } as unknown as Reflector;
+    const guard = new RolesGuard(reflector, {} as JwtService, {} as ConfigService);
+    const context = {
+      switchToHttp: () => ({ getRequest: () => ({ headers: { authorization: 'Bearer forged' } }) }),
+      getHandler: () => ({}),
+      getClass: () => ({}),
+    } as unknown as ExecutionContext;
+    await expect(guard.canActivate(context)).rejects.toThrow('Authentication token is required');
   });
 });

@@ -5,14 +5,10 @@ services:
     plan: starter
     dir: .
 
-    buildCommand: |
-      npm ci
-      npm install -g @nestjs/cli
-      node ./node_modules/prisma/build/index.js generate
-      npx nest build
-      node ./scripts/ensure-render-entrypoint.js
+    buildCommand: npm ci && npm run build
 
     startCommand: bash ./start.sh
+    healthCheckPath: /health
 
     envVars:
       - key: NODE_ENV
@@ -27,51 +23,20 @@ services:
           name: farm-db
           property: connectionString
       
-      # External managed Redis URL
+      # Redis URL - get from Redis service or use external Redis
       - key: REDIS_URL
         sync: false
 
       - key: WEB_CONCURRENCY
-        value: "1"
-
-      - key: ENABLE_CLUSTER
-        value: "false"
+        value: "2"
 
       - key: CACHE_TTL_SECONDS
         value: "60"
-
-      # Legacy SMTP settings for other email notifications.
-      - key: SMTP_HOST
-        value: smtpout.secureserver.net
-      - key: SMTP_PORT
-        value: "465"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      - key: SMTP_FROM
-        value: 'FARM Support <support@farmapp.africa>'
-
-      # Resend HTTPS API for password-reset email delivery.
-      - key: RESEND_API_KEY
-        sync: false
-      - key: RESEND_FROM
-        value: 'FARM Support <support@farmapp.africa>'
-
-      # Firebase Admin credentials are stored as Render environment variables.
-      - key: FIREBASE_PROJECT_ID
-        sync: false
-      - key: FIREBASE_CLIENT_EMAIL
-        sync: false
-      - key: FIREBASE_PRIVATE_KEY
-        sync: false
-      - key: FIREBASE_PASSWORD_RESET_CONTINUE_URL
-        value: https://farmapp-e2145.firebaseapp.com/admin-reset-password
       
       # CORS configuration
       - key: CORS_ORIGINS
         # Replace with your Cloudflare origin(s), comma-separated if multiple.
-        value: https://*.algorandfarm686.workers.dev,http://localhost:3000,http://localhost:3001
+        value: https://*.algorandfarm686.workers.dev
       
       # Paystack Configuration
       - key: PAYSTACK_SECRET_KEY
@@ -83,15 +48,13 @@ services:
       # Ivorypay Configuration
       - key: IVORYPAY_API_KEY
         sync: false
-      # Enable only when crypto payouts are activated and the server IP is allow-listed in Ivorypay.
-      - key: IVORYPAY_CRYPTO_PAYOUTS_ENABLED
-        value: "true"
       
       - key: IVORYPAY_BASE_URL
         value: https://api.ivorypay.io
       
       # JWT Configuration
-      - key: JWT_SECRET
+      # Must match the name the code reads (JwtStrategy / AuthService).
+      - key: JWT_ACCESS_SECRET
         sync: false
       
       - key: JWT_EXPIRATION
@@ -121,4 +84,22 @@ services:
         sync: false
       
       - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
+      # Secrets required by the code (production validation / webhooks / KYC).
+      - key: QR_HMAC_SECRET
+        sync: false
+      - key: FIELD_ENCRYPTION_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_WEBHOOK_SECRET
+        sync: false
+      - key: NOWPAYMENTS_IPN_SECRET
+        sync: false
+      - key: DIDIT_API_KEY
+        sync: false
+      - key: DIDIT_WEBHOOK_SECRET
+        sync: false
+      - key: DIDIT_SESSION_URL
         sync: false

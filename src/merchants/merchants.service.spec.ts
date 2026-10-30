@@ -16,7 +16,12 @@ describe('MerchantsService QR access', () => {
       generateMerchantQr: jest.fn(),
       getMerchantQr: jest.fn(),
     };
-    service = new MerchantsService(prisma, qrService);
+    const cache = {
+      cacheGet: jest.fn().mockResolvedValue(null),
+      cacheSet: jest.fn().mockResolvedValue(undefined),
+      cacheInvalidatePattern: jest.fn().mockResolvedValue(undefined),
+    };
+    service = new MerchantsService(prisma, qrService, cache as any);
   });
 
   it('rejects QR access for a merchant that is still pending approval', async () => {
