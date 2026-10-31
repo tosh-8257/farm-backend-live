@@ -28,15 +28,18 @@ const PAYABLE = ['sent', 'pending', 'overdue'];
 /** Public base URL for shareable pay pages. Not a secret; configurable per environment. */
 export function payBaseUrl() {
   return (
-    process.env.BUSINESS_PAY_BASE_URL ||
-    process.env.APP_URL ||
-    'https://farm-backend-r64g.onrender.com'
-  ).replace(/\/+$/, '');
+    // Hosted checkout on farmpay.africa (farm1 web/pay-doc.html). APP_URL is
+    // the web app and must not be used here.
+    (process.env.PAYMENT_BASE_URL || 'https://farmpay.africa').replace(
+      /\/+$/,
+      '',
+    )
+  );
 }
 export const linkUrl = (code: string) =>
-  `${payBaseUrl()}/api/pay/l/${encodeURIComponent(code)}`;
+  `${payBaseUrl()}/pay/l/${encodeURIComponent(code)}`;
 export const invoiceUrl = (n: string) =>
-  `${payBaseUrl()}/api/pay/i/${encodeURIComponent(n)}`;
+  `${payBaseUrl()}/pay/i/${encodeURIComponent(n)}`;
 
 export function escapeHtml(v: unknown) {
   const text =
