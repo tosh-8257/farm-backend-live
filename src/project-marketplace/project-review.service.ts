@@ -11,6 +11,8 @@ import { paginate, paginationParams } from '../common/utils/pagination.util';
 import { ADMIN_TRANSITIONS, RELEASABLE } from './project-rules';
 import { presentProject } from './marketplace.service';
 import { FeesService } from '../fees/fees.service';
+import { TokenizationService } from '../tokenization/tokenization.service';
+import { TokenDeliveryService } from '../tokenization/token-delivery.service';
 import {
   chargeConsolidationInTx,
   heldFunds,
@@ -26,6 +28,8 @@ export class ProjectReviewService {
   constructor(
     private readonly prisma: PrismaService,
     @Optional() private readonly fees?: FeesService,
+    @Optional() private readonly tokens?: TokenizationService,
+    @Optional() private readonly delivery?: TokenDeliveryService,
   ) {}
 
   /** Round close: take the consolidation fund fee once (no-op if already taken). */
@@ -120,6 +124,9 @@ export class ProjectReviewService {
       throw new BadRequestException(
         'The business must pass KYB before its project can be approved or listed',
       );
+    // On-invest token is created together with the listing; failure blocks it.
+    if (action === 'list' && this.tokens)
+      await this.tokens.ensureTokenForListing(adminId, id);
     const now = new Date();
     const data: any = {
       status: rule.to,
@@ -146,12 +153,21 @@ export class ProjectReviewService {
       },
     });
     let consolidation_fee: number | null = null;
-    if (action === 'close')
+    let tokens: any = null;
+    if (action === 'close') {
       consolidation_fee = await this.closeRound(id, adminId);
+      tokens = (await this.delivery?.closeOnInvest(id)) ?? null;
+    }
     let refunds: { refunded: number; amount: number; share: number } | null =
       null;
-    if (action === 'cancel') refunds = await this.refundAll(adminId, id);
-    return { data: { id, status: rule.to, refunds, consolidation_fee } };
+    if (action === 'cancel') {
+      // Tokens first: cancel owed, claw back delivered, then refund FARM.
+      tokens = (await this.delivery?.unwindForCancel(id)) ?? null;
+      refunds = await this.refundAll(adminId, id);
+    }
+    return {
+      data: { id, status: rule.to, refunds, consolidation_fee, tokens },
+    };
   }
 
   /**

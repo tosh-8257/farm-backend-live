@@ -25,6 +25,15 @@ export class ChainWalletController {
   }
 }
 
+/**
+ * 'send' is the real (on-chain) mode. 'execute' is kept as an alias, but the
+ * global SafeInputValidationPipe rejects that keyword, so clients use 'send'.
+ * Anything else is a dry run.
+ */
+export function reconcileMode(mode?: string): 'dry' | 'execute' {
+  return mode === 'send' || mode === 'execute' ? 'execute' : 'dry';
+}
+
 @ApiTags('Admin - Algorand')
 @ApiBearerAuth('JWT')
 @UseGuards(JwtGuard, RolesGuard)
@@ -63,11 +72,13 @@ export class AdminChainController {
     @CurrentUser() u: any,
     @Query('mode') mode?: string,
     @Query('limit') limit?: string,
+    @Query('address') address?: string,
   ) {
     return this.svc.reconcile(
       u.id,
-      mode === 'execute' ? 'execute' : 'dry',
+      reconcileMode(mode),
       Number(limit ?? 100) || 100,
+      address,
     );
   }
 }

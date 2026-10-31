@@ -278,8 +278,10 @@ describe('Phase 2b: web checkout reconciliation', () => {
 
 describe('Phase 2b: share URLs and invoice email', () => {
   it('builds public pay URLs', () => {
-    expect(linkUrl('AB12')).toMatch(/\/api\/pay\/l\/AB12$/);
-    expect(invoiceUrl('INV-1')).toMatch(/\/api\/pay\/i\/INV-1$/);
+    expect(linkUrl('AB12')).toMatch(/^https:\/\/farmpay.africa\/pay\/l\/AB12$/);
+    expect(invoiceUrl('INV-1')).toMatch(
+      /^https:\/\/farmpay.africa\/pay\/i\/INV-1$/,
+    );
   });
 
   function make(email: string | null, sent = true) {
@@ -316,7 +318,7 @@ describe('Phase 2b: share URLs and invoice email', () => {
     const [to, subject, html] = notif.sendEmail.mock.calls[0];
     expect(to).toBe('ann@example.com');
     expect(subject).toContain('INV-1');
-    expect(html).toContain('/api/pay/i/INV-1');
+    expect(html).toContain('https://farmpay.africa/pay/i/INV-1');
     expect(html).toContain('&lt;b&gt;Seeds');
     expect(prisma.business_invoices.update).toHaveBeenCalled();
   });

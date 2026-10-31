@@ -805,7 +805,20 @@ describe('AdminService admin management', () => {
           });
         }),
         findMany: jest.fn().mockResolvedValue([]),
+        groupBy: jest.fn().mockResolvedValue([
+          ...Object.entries(revenueByType).map(([type, r]) => ({
+            transaction_type: type,
+            _sum: { fee: r.fee },
+            _count: { id: r.count },
+          })),
+          {
+            transaction_type: 'transfer',
+            _sum: { fee: 1.5 },
+            _count: { id: 3 },
+          },
+        ]),
       },
+      $queryRaw: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
       support_tickets: { count: jest.fn().mockResolvedValue(0) },
       escrow_contracts: { count: jest.fn().mockResolvedValue(0) },
       kyc_documents: { count: jest.fn().mockResolvedValue(0) },
@@ -815,10 +828,23 @@ describe('AdminService admin management', () => {
       {} as any,
       {} as any,
       {} as any,
-      {} as any,
+      {
+        getCurrentRate: jest.fn().mockResolvedValue({
+          live_enabled: true,
+          stale: false,
+          is_override: false,
+        }),
+      } as any,
     );
 
     const result = await service.getSuperadminDashboard();
+    const streams = (result.data as any).revenue_streams;
+    expect(streams.map((r: any) => r.type)).toContain('transfer');
+    expect((result.data as any).system_checks.checks[0]).toMatchObject({
+      name: 'Database',
+      status: 'ok',
+    });
+    expect((result.data as any).system_health).toBeUndefined();
 
     expect(prisma.users.count).toHaveBeenCalledWith({
       where: {
@@ -849,8 +875,8 @@ describe('AdminService admin management', () => {
         withdrawal_fee_count: 3,
         merchant_sales_fee_earnings: 2.5,
         merchant_sales_count: 5,
-        platform_fee_total_earnings: 25.23,
-        total_revenue: 25.23,
+        platform_fee_total_earnings: 26.73, // includes the 1.50 transfer-fee stream
+        total_revenue: 26.73,
       }),
     );
   });

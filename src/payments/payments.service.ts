@@ -177,7 +177,7 @@ export class PaymentsService {
           fee: 0,
           net_amount: amount_farm,
           currency: 'FARM',
-          description: `Pending mobile money deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
+          description: `Mobile money deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
           metadata: {
             provider: 'paystack',
             amount_fiat: dto.amount_fiat,
@@ -282,7 +282,7 @@ export class PaymentsService {
           fee: 0,
           net_amount: amount_farm,
           currency: 'FARM',
-          description: `Pending crypto merchant checkout via NOWPayments (${amount_farm} FARM -> ${amountUsd} USD)`,
+          description: `Crypto merchant checkout via NOWPayments (${amount_farm} FARM -> ${amountUsd} USD)`,
           metadata: {
             provider: 'nowpayments',
             provider_ref: providerRef,
@@ -384,7 +384,7 @@ export class PaymentsService {
           fee: 0,
           net_amount: amount_farm,
           currency: 'FARM',
-          description: `Pending Card deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
+          description: `Card deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
           metadata: {
             provider: 'paystack',
             amount_fiat: dto.amount_fiat,
@@ -468,7 +468,7 @@ export class PaymentsService {
           fee: 0,
           net_amount: amount_farm,
           currency: 'FARM',
-          description: `Pending bank transfer deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
+          description: `Bank transfer deposit via Paystack (${dto.currency} ${dto.amount_fiat})`,
           metadata: {
             provider: 'paystack',
             amount_fiat: dto.amount_fiat,

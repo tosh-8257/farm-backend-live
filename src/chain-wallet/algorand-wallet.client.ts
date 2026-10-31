@@ -115,6 +115,51 @@ export class AlgorandWalletClient {
     }
   }
 
+  /** ALGO balance and min balance (microALGO) of an account. */
+  async algoInfo(
+    address: string,
+  ): Promise<{ amount: bigint; minBalance: bigint }> {
+    const a: any = await this.algod().accountInformation(address).do();
+    return {
+      amount: BigInt(a.amount ?? 0),
+      minBalance: BigInt(a.minBalance ?? a['min-balance'] ?? 0),
+    };
+  }
+
+  /** Funder ALGO payment, signed now, sent later (txId known before send). */
+  async prepareFund(
+    address: string,
+    microAlgos: bigint,
+    note: string,
+  ): Promise<PreparedTransfer> {
+    const f = this.funder();
+    try {
+      const sp = await this.algod().getTransactionParams().do();
+      const t = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: f.address,
+        receiver: address,
+        amount: microAlgos,
+        note: new TextEncoder().encode(note),
+        suggestedParams: {
+          ...sp,
+          flatFee: true,
+          fee: AlgorandWalletClient.fee(sp.minFee, f.scheme),
+        },
+      });
+      const signed = await f.sign([t]);
+      const txId = t.txID();
+      return {
+        txId,
+        lastValid: BigInt(t.lastValid),
+        send: async () => {
+          await this.sendSigned(signed, txId);
+        },
+      };
+    } finally {
+      f.wipe();
+    }
+  }
+
   /** Opt-in signed by the account; its fee is paid by the funder (pooled). */
   async optIn(address: string, signer: AlgoSigner, assetId: bigint) {
     const f = this.funder();
@@ -183,6 +228,62 @@ export class AlgorandWalletClient {
       const signed = [
         ...(await f.sign([feePay])),
         ...(await p.signer.sign([axfer])),
+      ];
+      const txId = axfer.txID();
+      return {
+        txId,
+        lastValid: BigInt(axfer.lastValid),
+        send: async () => {
+          await this.sendSigned(signed, txId);
+        },
+      };
+    } finally {
+      f.wipe();
+    }
+  }
+
+  /** True when `address` has opted in to `assetId` (holding exists). */
+  async isOptedIn(address: string, assetId: bigint): Promise<boolean> {
+    try {
+      const r: any = await this.algod()
+        .accountAssetInformation(address, assetId)
+        .do();
+      return !!r.assetHolding;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Clawback of a project token: the clawback account (issuer) moves units
+   * from `from` back to `to`. Fee paid by the funder (pooled). txId and
+   * lastValid are known before sending (outbox).
+   */
+  async prepareClawback(p: {
+    clawback: AlgoSigner;
+    from: string;
+    to: string;
+    assetId: bigint;
+    amount: bigint;
+    note: string;
+  }): Promise<PreparedTransfer> {
+    const f = this.funder();
+    try {
+      const sp = await this.algod().getTransactionParams().do();
+      const axfer = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
+        sender: p.clawback.address,
+        assetSender: p.from,
+        receiver: p.to,
+        amount: p.amount,
+        assetIndex: p.assetId,
+        note: new TextEncoder().encode(p.note),
+        suggestedParams: { ...sp, fee: 0n, flatFee: true },
+      });
+      const feePay = this.feePayment(f, sp, [p.clawback.scheme]);
+      algosdk.assignGroupID([feePay, axfer]);
+      const signed = [
+        ...(await f.sign([feePay])),
+        ...(await p.clawback.sign([axfer])),
       ];
       const txId = axfer.txID();
       return {

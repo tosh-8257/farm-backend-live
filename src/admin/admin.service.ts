@@ -2066,17 +2066,43 @@ export class AdminService {
       }),
     ]);
 
+    // Every completed transaction that carried a platform fee, by type, so
+    // new fee sources (transfers, swaps, bills, NFC, etc.) are never missed.
+    let feeGroups: any[] = [];
+    try {
+      feeGroups = await (this.prisma.transactions as any).groupBy({
+        by: ['transaction_type'],
+        where: { status: 'completed', fee: { gt: 0 } },
+        _sum: { fee: true },
+        _count: { id: true },
+      });
+    } catch {
+      feeGroups = [];
+    }
+    const revenue_streams = feeGroups
+      .map((g: any) => ({
+        type: String(g.transaction_type ?? 'other'),
+        label: AdminService.revenueLabel(String(g.transaction_type ?? 'other')),
+        total: Number(Number(g._sum?.fee ?? 0).toFixed(8)),
+        count: Number(g._count?.id ?? 0),
+      }))
+      .filter((r) => r.total > 0)
+      .sort((a, b) => b.total - a.total);
+    const system_checks = await this.superadminSystemChecks();
+
     const escrow_creation_earnings = Number(escrowCreationAgg._sum.fee ?? 0);
     const escrow_release_earnings = Number(escrowReleaseAgg._sum.fee ?? 0);
     const withdrawal_total_earnings = Number(withdrawalAgg._sum.fee ?? 0);
     const merchant_sales_fee_earnings = Number(merchantSalesAgg._sum.fee ?? 0);
     const escrow_total_earnings =
       escrow_creation_earnings + escrow_release_earnings;
+    const streamsTotal = revenue_streams.reduce((t, r) => t + r.total, 0);
     const total_platform_fee_earnings = Number(
-      (
-        escrow_total_earnings +
-        withdrawal_total_earnings +
-        merchant_sales_fee_earnings
+      (revenue_streams.length
+        ? streamsTotal
+        : escrow_total_earnings +
+          withdrawal_total_earnings +
+          merchant_sales_fee_earnings
       ).toFixed(2),
     );
 
@@ -2090,7 +2116,8 @@ export class AdminService {
         support_tickets: supportTickets,
         pending_disputes: pendingDisputes,
         pending_kyc: pendingKyc,
-        system_health: 99,
+        system_checks,
+        revenue_streams,
         recent_activities: recentTx.map((tx: any) => ({
           description: `${tx.transaction_type} transaction of $${tx.amount}`,
           type: tx.transaction_type,
@@ -2114,6 +2141,98 @@ export class AdminService {
           (escrowReleaseAgg._count.id ?? 0),
       },
     };
+  }
+
+  static revenueLabel(type: string): string {
+    const known: Record<string, string> = {
+      escrow_lock: 'Escrow creation fees',
+      escrow_release: 'Escrow release fees',
+      withdrawal: 'Withdrawal fees',
+      merchant_payment: 'Merchant sales fees',
+      transfer: 'Transfer fees',
+      deposit: 'Deposit fees',
+      swap: 'Swap fees',
+      investment: 'Investment fees',
+      mkulima_usage: 'Mkulima AI margin',
+    };
+    if (known[type]) return known[type];
+    const words = type.replace(/_/g, ' ').trim();
+    return `${words.charAt(0).toUpperCase()}${words.slice(1)} fees`;
+  }
+
+  /** Real, point-in-time checks (no synthetic uptime percentages). */
+  private async superadminSystemChecks() {
+    const checks: Array<{
+      name: string;
+      status: 'ok' | 'degraded' | 'error' | 'disabled';
+      detail: string;
+    }> = [];
+    try {
+      const start = Date.now();
+      await this.prisma.$queryRaw`SELECT 1`;
+      checks.push({
+        name: 'Database',
+        status: 'ok',
+        detail: `${Date.now() - start} ms`,
+      });
+    } catch {
+      checks.push({ name: 'Database', status: 'error', detail: 'unreachable' });
+    }
+    try {
+      const rate = await this.currencyConversionService.getCurrentRate();
+      checks.push({
+        name: 'USD/KES rate',
+        status: !rate.live_enabled
+          ? 'disabled'
+          : rate.stale
+            ? 'degraded'
+            : 'ok',
+        detail: rate.live_enabled
+          ? rate.is_override
+            ? 'manual override'
+            : rate.stale
+              ? 'live feed unavailable'
+              : 'live'
+          : 'manual',
+      });
+    } catch {
+      checks.push({
+        name: 'USD/KES rate',
+        status: 'error',
+        detail: 'unavailable',
+      });
+    }
+    try {
+      const stuck = await this.prisma.transactions.count({
+        where: {
+          status: 'pending',
+          created_at: { lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+        },
+      });
+      checks.push({
+        name: 'Pending > 24h',
+        status: stuck > 0 ? 'degraded' : 'ok',
+        detail: `${stuck} transactions`,
+      });
+    } catch {
+      checks.push({
+        name: 'Pending > 24h',
+        status: 'error',
+        detail: 'unavailable',
+      });
+    }
+    const heapMb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+    checks.push({
+      name: 'API server',
+      status: 'ok',
+      detail: `up ${Math.round(process.uptime() / 60)} min, ${heapMb} MB heap`,
+    });
+    return { checked_at: new Date().toISOString(), checks };
+  }
+
+  async clearCurrencyRateOverride() {
+    const rate = await this.currencyConversionService.clearOverride();
+    return { data: rate, message: 'Manual override cleared' };
   }
 
   async getComplianceReport(query: any) {

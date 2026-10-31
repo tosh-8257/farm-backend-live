@@ -127,6 +127,7 @@ describe('DiditService', () => {
       didit_webhook_events: { create: jest.fn().mockResolvedValue({}) },
       users: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       kyc_documents: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      kyc_identity_references: { upsert: jest.fn().mockResolvedValue({}) },
     };
     const prisma = {
       $transaction: jest.fn((callback: (transaction: typeof tx) => unknown) =>
@@ -155,6 +156,12 @@ describe('DiditService', () => {
     });
     // Historical manual KYC rows are no longer rewritten by Didit events.
     expect(tx.kyc_documents.updateMany).not.toHaveBeenCalled();
+    // First approved session becomes the device-recovery identity reference.
+    expect(tx.kyc_identity_references.upsert).toHaveBeenCalledWith({
+      where: { user_id: userId },
+      create: { user_id: userId, didit_session_id: 'didit-session-1' },
+      update: {},
+    });
   });
 
   it('rejects invalid signatures and stale signed timestamps', async () => {

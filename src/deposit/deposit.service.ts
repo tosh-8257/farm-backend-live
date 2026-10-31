@@ -1,3 +1,4 @@
+import { cleanTransactionDescription } from '../common/utils/transaction-description';
 // src/deposit/deposit.service.ts
 import {
   Injectable,
@@ -17,8 +18,11 @@ import { assertResourceAccess } from '../common/utils/access-control.util';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CurrencyConversionService } from '../currency/currency-conversion.service';
 import { NowpaymentsService } from '../nowpayments/nowpayments.service';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 const MIN_NOWPAYMENTS_CRYPTO_DEPOSIT_USD = 2;
+const STALE_NOWPAYMENTS_DEPOSIT_MS = 24 * 60 * 60 * 1000;
+const NOWPAYMENTS_DEAD_STATUSES = new Set(['expired', 'failed', 'refunded']);
 
 @Injectable()
 export class DepositService {
@@ -183,7 +187,7 @@ export class DepositService {
           fee: 0,
           net_amount: amountFarm,
           currency: 'FARM',
-          description: `Pending NOWPayments crypto deposit (${priceAmount.toFixed(2)} USD)`,
+          description: `Crypto deposit via NOWPayments (${priceAmount.toFixed(2)} USD)`,
           metadata: {
             provider: 'nowpayments',
             payment_method: 'CRYPTO',
@@ -467,7 +471,9 @@ export class DepositService {
           fee: 0,
           net_amount: total,
           currency: depositCurrency,
-          description: `Pending ${paymentMethod} deposit via ${provider.toUpperCase()} (${depositCurrency} ${total})`,
+          description: cleanTransactionDescription(
+            `${paymentMethod} deposit via ${provider.toUpperCase()} (${depositCurrency} ${total})`,
+          ) as string,
           metadata: {
             provider,
             amount_fiat: amount,
@@ -526,7 +532,7 @@ export class DepositService {
           fee: 0,
           net_amount: farmAmount,
           currency: 'FARM',
-          description: `Pending crypto deposit via Ivorypay (${farmAmount} FARM → ${amountUsd} USD)`,
+          description: `Crypto deposit via Ivorypay (${farmAmount} FARM → ${amountUsd} USD)`,
           metadata: {
             provider: 'ivorypay',
             provider_ref: providerRef,
@@ -1550,5 +1556,71 @@ export class DepositService {
     const n = Number(amount ?? 0);
     if (!isFinite(n)) return 0;
     return Math.round(n * 100) / 100;
+  }
+
+  /**
+   * Off unless NOWPAYMENTS_EXPIRE_STALE_ENABLED=true. Marks NOWPayments
+   * deposits that have been PENDING for more than 24h as FAILED, but only
+   * when no payment can arrive: either NOWPayments never created a payment
+   * (no providerRef), or NOWPayments itself reports it expired/failed/refunded.
+   * Never credits or debits anything; status change only.
+   */
+  @Cron(CronExpression.EVERY_HOUR)
+  async expireStaleNowpaymentsDeposits() {
+    if (process.env.NOWPAYMENTS_EXPIRE_STALE_ENABLED !== 'true') return;
+    return this.runExpireStaleNowpaymentsDeposits();
+  }
+
+  async runExpireStaleNowpaymentsDeposits(now = new Date()) {
+    const cutoff = new Date(now.getTime() - STALE_NOWPAYMENTS_DEPOSIT_MS);
+    const stale = await this.prisma.deposit.findMany({
+      where: {
+        provider: 'nowpayments',
+        status: 'PENDING',
+        createdAt: { lt: cutoff },
+      },
+      take: 50,
+      orderBy: { createdAt: 'asc' },
+    });
+    let expired = 0;
+    for (const d of stale) {
+      let reason: string | null = null;
+      if (!d.providerRef) {
+        reason = 'nowpayments_payment_never_created';
+      } else {
+        try {
+          const p = await this.nowpayments.getPayment(d.providerRef);
+          const st = p.payment_status?.toString().toLowerCase() ?? '';
+          if (NOWPAYMENTS_DEAD_STATUSES.has(st)) reason = `nowpayments_${st}`;
+        } catch (err) {
+          this.logger.warn(
+            `Stale NOWPayments check failed for deposit ${d.id}: ${
+              err instanceof Error ? err.message : err
+            }`,
+          );
+        }
+      }
+      if (!reason) continue;
+      const res = await this.prisma.$transaction(async (tx) => {
+        const u = await tx.deposit.updateMany({
+          where: { id: d.id, status: 'PENDING' },
+          data: { status: 'FAILED' },
+        });
+        if (u.count === 1) {
+          await tx.transactions.updateMany({
+            where: { transaction_reference: d.reference, status: 'pending' },
+            data: { status: 'failed' },
+          });
+        }
+        return u.count;
+      });
+      if (res === 1) {
+        expired += 1;
+        this.logger.log(
+          `Expired stale NOWPayments deposit ${d.id} (${reason})`,
+        );
+      }
+    }
+    return { checked: stale.length, expired };
   }
 }

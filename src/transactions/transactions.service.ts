@@ -1,3 +1,4 @@
+import { cleanTransactionDescription } from '../common/utils/transaction-description';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { CacheService } from '../common/cache/cache.service';
@@ -440,28 +441,15 @@ export class TransactionsService {
 
   private normalizeTransactionDescription(
     transactionType: string | null | undefined,
-    status: string | null | undefined,
+    _status: string | null | undefined,
     description: string | null | undefined,
   ) {
+    // Status is shown by its own badge; the description must not repeat it.
+    const cleaned = cleanTransactionDescription(description);
+    if (cleaned) return cleaned;
     const normalizedType = (transactionType ?? '').toString().toLowerCase();
-    const normalizedStatus = (status ?? '').toString().toLowerCase();
-    if (
-      normalizedStatus === 'completed' ||
-      normalizedStatus === 'success' ||
-      normalizedStatus === 'successful'
-    ) {
-      if (normalizedType === 'deposit') return 'Successful deposit';
-      if (normalizedType === 'withdrawal') return 'Successful withdrawal';
-      return 'Successful transaction';
-    }
-    if (normalizedStatus === 'pending') {
-      if (normalizedType === 'deposit') return 'Pending deposit';
-      if (normalizedType === 'withdrawal') return 'Pending withdrawal';
-      return 'Pending transaction';
-    }
-    if (normalizedStatus === 'failed') {
-      return 'Failed transaction';
-    }
-    return description ?? 'Transaction';
+    if (normalizedType === 'deposit') return 'Deposit';
+    if (normalizedType === 'withdrawal') return 'Withdrawal';
+    return 'Transaction';
   }
 }

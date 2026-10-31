@@ -3,6 +3,9 @@ import { randomBytes } from 'crypto';
 import { chainConfig } from './chain-config';
 import { openSecret, sealSecret } from './key-vault';
 import { ChainWalletService } from './chain-wallet.service';
+import { reconcileMode } from './chain-wallet.controller';
+import { SafeInputValidationPipe } from '../common/pipes/safe-input.pipe';
+import { BadRequestException } from '@nestjs/common';
 import { RateService } from './rate.service';
 
 const KEY = randomBytes(32).toString('base64');
@@ -290,5 +293,42 @@ describe('Phase 6 – custodial wallet + deposits', () => {
     await expect(mocks().svc.reconcile('a', 'execute')).rejects.toBeInstanceOf(
       ServiceUnavailableException,
     );
+  });
+  it('reconcile mode=send maps to the real mode; execute kept; else dry', () => {
+    expect(reconcileMode('send')).toBe('execute');
+    expect(reconcileMode('execute')).toBe('execute');
+    expect(reconcileMode('dry')).toBe('dry');
+    expect(reconcileMode(undefined)).toBe('dry');
+    expect(reconcileMode('SEND')).toBe('dry');
+  });
+  it('mode=send passes the input filter (execute does not)', () => {
+    const pipe = new SafeInputValidationPipe();
+    expect(pipe.transform('send', { type: 'query', data: 'mode' })).toBe(
+      'send',
+    );
+    expect(() =>
+      pipe.transform('execute', { type: 'query', data: 'mode' }),
+    ).toThrow(BadRequestException);
+  });
+  it('reconcile send is still refused unless the mirror flag is on', async () => {
+    await expect(
+      mocks().svc.reconcile('a', reconcileMode('send'), 1, 'A'.repeat(58)),
+    ).rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+  it('reconcile rejects a malformed address', async () => {
+    await expect(
+      mocks().svc.reconcile('a', 'dry', 1, 'not-an-address'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+  it('reconcile with address only queries that ready wallet', async () => {
+    const m = mocks();
+    (m as any).prisma.farm_reconciliation_runs = {
+      create: jest.fn().mockResolvedValue({ id: 'run1' }),
+      update: jest.fn(),
+    };
+    await m.svc.reconcile('a', 'dry', 1, 'A'.repeat(58)).catch(() => undefined);
+    const where = (m as any).prisma.user_chain_wallets.findMany.mock.calls[0][0]
+      .where;
+    expect(where).toMatchObject({ status: 'ready', address: 'A'.repeat(58) });
   });
 });

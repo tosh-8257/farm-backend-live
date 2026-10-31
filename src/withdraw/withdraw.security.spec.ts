@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { WithdrawService } from './withdraw.service';
+import { WithdrawService, withdrawalDailyLimits } from './withdraw.service';
 import { PrismaService } from '../database/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SecurityService } from '../security/security.service';
@@ -108,7 +108,14 @@ function createFakeDb(initialBalance: number) {
         },
         aggregate: async ({ where }: any) => {
           const rows = withdrawals.filter(
-            (w) => w.userId === where.userId && w.status !== 'FAILED',
+            (w) =>
+              w.userId === where.userId &&
+              w.status !== 'FAILED' &&
+              (typeof where.method === 'string'
+                ? w.method === where.method
+                : where.method?.not
+                  ? w.method !== where.method.not
+                  : true),
           );
           return {
             _count: { _all: rows.length },
@@ -258,6 +265,44 @@ describe('WithdrawService security (race, idempotency, refunds)', () => {
   afterEach(() => {
     delete process.env.WITHDRAWAL_DAILY_MAX_COUNT;
     delete process.env.WITHDRAWAL_DAILY_MAX_AMOUNT;
+    delete process.env.CRYPTO_WITHDRAWAL_DAILY_MAX_USD;
+    delete process.env.CRYPTO_WITHDRAWAL_MAX_USD;
+  });
+
+  it('crypto uses its own USD daily cap and is exempt from the FARM cap', async () => {
+    await build(100_000);
+    jest.spyOn(service, 'submitNowpaymentsPayout').mockResolvedValue({} as any);
+    jest
+      .spyOn(service as any, 'processWithdrawal')
+      .mockResolvedValue(undefined);
+    process.env.WITHDRAWAL_DAILY_MAX_COUNT = '0';
+    process.env.WITHDRAWAL_DAILY_MAX_AMOUNT = '3000'; // FARM, fiat only
+    process.env.CRYPTO_WITHDRAWAL_DAILY_MAX_USD = '50'; // rate 0.01 => 5,000 FARM
+    process.env.CRYPTO_WITHDRAWAL_MAX_USD = '35'; // per withdrawal
+    await expect(
+      service.createNowpaymentsCryptoWithdrawal('user-1', crypto(4_000)),
+    ).rejects.toThrow(/Maximum crypto withdrawal is USD 35 per withdrawal/);
+    expect(db.wallet.locked_balance).toBe(0);
+    // 3,000 FARM = USD 30: above the FARM cap but crypto is exempt
+    await service.createNowpaymentsCryptoWithdrawal('user-1', crypto(3_000));
+    // another USD 30 would exceed USD 50
+    await expect(
+      service.createNowpaymentsCryptoWithdrawal('user-1', crypto(3_000)),
+    ).rejects.toThrow(/Daily crypto withdrawal limit is USD 50/);
+    expect(db.wallet.locked_balance).toBe(3_000);
+    // fiat FARM cap ignores the crypto withdrawal
+    await service.createWithdrawal('user-1', fiat(2_000));
+    await expect(
+      service.createWithdrawal('user-1', fiat(1_500)),
+    ).rejects.toThrow(/Daily withdrawal amount limit/);
+    expect(db.wallet.locked_balance).toBe(5_000);
+  });
+
+  it('crypto caps default to USD 100,000 per withdrawal and USD 1,000,000 per day', async () => {
+    delete process.env.CRYPTO_WITHDRAWAL_DAILY_MAX_USD;
+    delete process.env.CRYPTO_WITHDRAWAL_MAX_USD;
+    expect(withdrawalDailyLimits().cryptoMaxUsd).toBe(100_000);
+    expect(withdrawalDailyLimits().cryptoDailyMaxUsd).toBe(1_000_000);
   });
 
   it('concurrent automatic fiat withdrawals can never lock more than the balance', async () => {
