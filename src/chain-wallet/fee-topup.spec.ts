@@ -178,3 +178,28 @@ describe('ALGO fee top-up', () => {
     expect(c.prisma.chain_fee_topups.update).not.toHaveBeenCalled();
   });
 });
+
+describe('ALGO fee top-up: needSpendable (token opt-in)', () => {
+  const OLD = { ...process.env };
+  beforeEach(() => Object.assign(process.env, ENV));
+  afterEach(() => (process.env = { ...OLD }));
+
+  it('tops up enough for the opt-in min balance, within caps', async () => {
+    const { svc, chain } = setup({ bal: 302_000n }); // spendable 0.002
+    expect(await svc.ensure(ADDR, 'token_optin', 101_000n)).toBe('sent');
+    expect(chain.prepareFund).toHaveBeenCalledWith(
+      ADDR,
+      99_000n,
+      expect.any(String),
+    );
+  });
+  it('still respects the per-wallet daily cap', async () => {
+    const { svc, chain } = setup({ bal: 302_000n, walletSent: 150_000n });
+    expect(await svc.ensure(ADDR, 'token_optin', 101_000n)).toBe('wallet_cap');
+    expect(chain.prepareFund).not.toHaveBeenCalled();
+  });
+  it('enough spendable -> nothing sent', async () => {
+    const { svc } = setup({ bal: 500_000n });
+    expect(await svc.ensure(ADDR, 'token_optin', 101_000n)).toBe('enough');
+  });
+});

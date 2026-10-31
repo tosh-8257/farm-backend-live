@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import {
+  IsIn,
   IsOptional,
   IsString,
   Length,
@@ -26,6 +27,8 @@ import { TokenizationService } from './tokenization.service';
 export class TokenRequestDto {
   @IsString() @Length(1, 32) asset_name!: string;
   @IsString() @Matches(/^[A-Za-z0-9]{1,8}$/) unit_name!: string;
+  /** 'on_invest' = mint at listing, deliver as people invest. */
+  @IsOptional() @IsIn(['on_invest', 'post_funding']) mode?: string;
 }
 export class TokenNotesDto {
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;

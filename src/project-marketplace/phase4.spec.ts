@@ -54,6 +54,7 @@ function marketMocks(over: any = {}) {
         .mockResolvedValue({ raised_amount: 100, target_amount: 1000 }),
       update: jest.fn(),
     },
+    project_tokens: { findUnique: jest.fn().mockResolvedValue(null) },
     ...over.tx,
   };
   const prisma: any = {

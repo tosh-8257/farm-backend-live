@@ -1,3 +1,4 @@
+import { allocateOnInvestInTx } from '../tokenization/on-invest';
 import {
   BadRequestException,
   ConflictException,
@@ -415,6 +416,13 @@ export class MarketplaceService {
           status: 'committed',
           disclosure_acceptance_id: acceptance.id,
         },
+      });
+      // On-invest tokens: record the owed allocation in the same transaction.
+      await allocateOnInvestInTx(tx, {
+        projectId,
+        investmentId: inv.id,
+        userId,
+        amount,
       });
       const after = await tx.investment_projects.findUnique({
         where: { id: projectId },
