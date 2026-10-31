@@ -77,6 +77,60 @@ export class BusinessWebCheckoutController {
     }
   }
 
+  private kindOf(kind: string) {
+    return kind === 'l' ? 'link' : kind === 'i' ? 'invoice' : null;
+  }
+
+  /** JSON for the farmpay.africa hosted checkout (pay-doc.html). */
+  @Get('data/:kind/:ref')
+  async data(@Param('kind') kind: string, @Param('ref') ref: string) {
+    const k = this.kindOf(kind);
+    if (!k) throw new HttpException('Not found', 404);
+    const t = await this.svc.target(k, ref);
+    let amount_kes: number | null = null;
+    if (t.payable) {
+      try {
+        amount_kes = Number((await this.svc.quoteKes(t.amount)).toFixed(2));
+      } catch {
+        amount_kes = null;
+      }
+    }
+    return {
+      success: true,
+      data: {
+        kind: k,
+        ref: t.ref,
+        title: t.title,
+        description: t.description,
+        business_name: t.business_name,
+        amount: t.amount,
+        amount_kes,
+        payable: t.payable,
+        state: t.state,
+      },
+    };
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('data/:kind/:ref/checkout')
+  async dataCheckout(
+    @Param('kind') kind: string,
+    @Param('ref') ref: string,
+    @Body() body: { method?: string; email?: string },
+  ) {
+    const k = this.kindOf(kind);
+    if (!k) throw new HttpException('Not found', 404);
+    const email =
+      typeof body?.email === 'string' ? body.email.slice(0, 255) : undefined;
+    const { url, reference } = await this.svc.start(
+      k,
+      ref,
+      String(body?.method ?? ''),
+      email,
+    );
+    return { success: true, data: { url, reference } };
+  }
+
   @Get('l/:code')
   link(@Param('code') code: string, @Res() res: Response) {
     return this.render(res, 'link', code);
