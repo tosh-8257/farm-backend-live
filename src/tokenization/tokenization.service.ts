@@ -463,6 +463,10 @@ export class TokenizationService {
           BigInt(a.units) - BigInt(a.sold_units ?? 0n)
         ).toString(),
         source: a.source ?? 'investment',
+        can_send:
+          process.env.TOKEN_TRANSFERS_ENABLED === 'true' &&
+          ['held', 'owed', 'delivered'].includes(a.status) &&
+          BigInt(a.units) - BigInt(a.sold_units ?? 0n) > 0n,
         transferable_units: (
           BigInt(a.units) - BigInt(a.sold_units ?? 0n)
         ).toString(),
