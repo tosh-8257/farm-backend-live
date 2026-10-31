@@ -1139,6 +1139,8 @@ model businesses {
   id                   String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   owner_user_id        String                       @unique @db.Uuid
   merchant_id          String?                      @unique @db.Uuid
+  /// Separate merchant settlement wallet (BUSINESS_WALLET_ENABLED). NULL = legacy: receipts land in the owner's personal wallet.
+  wallet_id            String?                      @unique @db.Uuid
   legal_name           String?                      @db.VarChar(255)
   trading_name         String?                      @db.VarChar(255)
   registration_number  String?                      @db.VarChar(255)

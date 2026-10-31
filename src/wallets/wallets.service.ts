@@ -18,6 +18,8 @@ import { generateTxReference } from '../common/utils/reference.util';
 import { paginationParams, paginate } from '../common/utils/pagination.util';
 import { HIDDEN_TRANSACTION_HISTORY_STATUSES } from '../common/utils/hidden-transaction-history-statuses';
 
+import { businessWalletEnabled } from '../business-ops/business-wallet';
+
 @Injectable()
 export class WalletsService {
   private readonly logger = new Logger(WalletsService.name);
@@ -31,6 +33,34 @@ export class WalletsService {
     private websocket: WebsocketGateway,
     @Optional() private readonly fees?: FeesService,
   ) {}
+
+  private async businessWalletSummary(userId: string) {
+    if (!businessWalletEnabled()) return null;
+    const b = await this.prisma.businesses.findUnique({
+      where: { owner_user_id: userId },
+      select: {
+        wallet_id: true,
+        status: true,
+        trading_name: true,
+        legal_name: true,
+      },
+    });
+    if (!b?.wallet_id || b.status !== 'approved') return null;
+    const w = await this.prisma.wallets.findUnique({
+      where: { id: b.wallet_id },
+    });
+    if (!w) return null;
+    return {
+      id: w.id,
+      name: b.trading_name || b.legal_name || 'Business',
+      balance: Number(w.balance),
+      available_balance: Math.max(
+        0,
+        Number(w.balance) - Number(w.locked_balance),
+      ),
+      currency: w.currency,
+    };
+  }
 
   async getMyWallet(userId: string) {
     const cacheKey = `wallet:${userId}:balance`;
@@ -55,6 +85,9 @@ export class WalletsService {
         currency: wallet.currency,
         blockchain_address: wallet.blockchain_address,
         is_frozen: wallet.is_frozen,
+        // BUSINESS_WALLET_ENABLED: the owner's business (merchant) balance,
+        // shown alongside personal. Not spendable from personal sends.
+        business_wallet: await this.businessWalletSummary(userId),
       },
     };
 
