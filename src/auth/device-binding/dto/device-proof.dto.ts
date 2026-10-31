@@ -6,6 +6,7 @@ import {
   IsString,
   Length,
   Matches,
+  MaxLength,
 } from 'class-validator';
 
 const DEVICE_ID = /^[A-Za-z0-9._:-]{8,128}$/;
@@ -58,4 +59,11 @@ export class RecoveryOtpDto {
 export class RecoveryCompleteDto {
   @ApiProperty() @IsString() recovery_id!: string;
   @ApiProperty() @Matches(DEVICE_ID) device_id!: string;
+}
+
+export class RecoveryReviewRejectDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  reason?: string;
 }

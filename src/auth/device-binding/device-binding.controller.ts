@@ -29,6 +29,7 @@ import {
   PendingDeviceStatusDto,
   RecoveryCompleteDto,
   RecoveryOtpDto,
+  RecoveryReviewRejectDto,
   RecoveryStartDto,
 } from './dto/device-proof.dto';
 
@@ -206,5 +207,44 @@ export class DeviceAdminController {
       { id: admin.id, admin: true },
       req.ip,
     );
+  }
+}
+
+@ApiTags('Admin - device recovery')
+@ApiBearerAuth('JWT')
+@UseGuards(JwtGuard, RolesGuard)
+@Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
+@Controller({ path: 'admin/device-recoveries', version: '1' })
+export class DeviceRecoveryAdminController {
+  constructor(private readonly devices: DeviceBindingService) {}
+
+  @Permissions('admin:read')
+  @Get('review')
+  @ApiOperation({ summary: 'Recoveries awaiting manual owner review' })
+  list() {
+    return this.devices.listRecoveryReviews();
+  }
+
+  @Permissions('admin:write')
+  @Post(':id/approve')
+  @HttpCode(HttpStatus.OK)
+  approve(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
+    return this.devices.approveRecoveryReview(id, admin.id, req.ip);
+  }
+
+  @Permissions('admin:write')
+  @Post(':id/reject')
+  @HttpCode(HttpStatus.OK)
+  reject(
+    @CurrentUser() admin: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecoveryReviewRejectDto,
+    @Req() req: Request,
+  ) {
+    return this.devices.rejectRecoveryReview(id, admin.id, dto.reason, req.ip);
   }
 }

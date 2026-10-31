@@ -5,8 +5,14 @@ import {
   Logger,
   NotFoundException,
   UnauthorizedException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
+import {
+  OwnerMatchResult,
+  RecoveryOwnerMatchService,
+} from '../../didit/recovery-owner-match.service';
 import { randomBytes, randomInt } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
 import { NotificationsService } from '../../notifications/notifications.service';
@@ -50,6 +56,7 @@ export class DeviceBindingService {
     private readonly prisma: PrismaService,
     private readonly cfg: ConfigService,
     private readonly notifications: NotificationsService,
+    @Optional() private readonly ownerMatch?: RecoveryOwnerMatchService,
   ) {}
 
   isEnabled(): boolean {
@@ -497,7 +504,13 @@ export class DeviceBindingService {
     const rec = await this.prisma.device_recoveries.findUnique({
       where: { id: recoveryId },
     });
-    if (!rec || rec.expires_at < new Date()) {
+    // Rows already handed to (or decided by) review stay readable after the
+    // OTP window so the app can show the review outcome.
+    const decided = ['manual_review', 'verifying', 'completed', 'rejected'];
+    if (
+      !rec ||
+      (!decided.includes(rec.status) && rec.expires_at < new Date())
+    ) {
       throw new NotFoundException('Recovery expired. Start again.');
     }
     const device = await this.prisma.trusted_devices.findUnique({
@@ -571,49 +584,103 @@ export class DeviceBindingService {
   /** Both checks passed: revoke every other device, trust this one. */
   async completeRecovery(recoveryId: string, deviceId: string, ip?: string) {
     const { rec, device } = await this.loadRecovery(recoveryId, deviceId);
+    if (rec.status === 'manual_review' || rec.status === 'verifying') {
+      return { data: { status: 'manual_review' } };
+    }
     if (rec.status !== 'otp_verified' || rec.didit_status !== 'Approved') {
       throw new ForbiddenException('ID check not approved yet');
     }
+    // Claim the row so the (paid) owner match runs once.
+    const claimed = await this.prisma.device_recoveries.updateMany({
+      where: { id: rec.id, status: 'otp_verified' },
+      data: { status: 'verifying' },
+    });
+    if (claimed.count !== 1) {
+      throw new BadRequestException('Recovery already in progress');
+    }
+
+    // Fail closed: anything other than a positive owner match goes to an
+    // admin. Never auto-approved.
+    const match: OwnerMatchResult = this.ownerMatch
+      ? await this.ownerMatch.check(rec.user_id, rec.didit_session_id)
+      : { matched: false, reasons: ['OWNER_MATCH_UNAVAILABLE'], score: null };
+
+    if (!match.matched) {
+      const reasons = match.reasons.length ? match.reasons : ['UNKNOWN'];
+      await this.prisma.device_recoveries.updateMany({
+        where: { id: rec.id, status: 'verifying' },
+        data: {
+          status: 'manual_review',
+          review_reason: reasons.join(',').slice(0, 500),
+          face_match_score: match.score,
+        },
+      });
+      await this.audit(
+        rec.user_id,
+        'DEVICE_RECOVERY_REVIEW_REQUIRED',
+        device.id,
+        { recovery_id: rec.id, reasons, face_match_score: match.score },
+        ip,
+      );
+      return { data: { status: 'manual_review' } };
+    }
+
+    await this.finalizeRecovery(rec.id, rec.user_id, device.id, ['verifying'], {
+      face_match_score: match.score,
+    });
+    await this.audit(
+      rec.user_id,
+      'DEVICE_RECOVERED',
+      device.id,
+      { recovery_id: rec.id, owner_match: true, face_match_score: match.score },
+      ip,
+    );
+    await this.notifyRecovered(rec.user_id);
+    return { data: { status: 'trusted' } };
+  }
+
+  /** Atomically completes a recovery from one of `fromStatuses`. */
+  private async finalizeRecovery(
+    recoveryId: string,
+    userId: string,
+    trustedDeviceId: string,
+    fromStatuses: string[],
+    extra: Prisma.device_recoveriesUpdateManyMutationInput,
+  ) {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.device_recoveries.updateMany({
-        where: { id: rec.id, status: 'otp_verified' },
-        data: { status: 'completed', completed_at: now },
+        where: { id: recoveryId, status: { in: fromStatuses } },
+        data: { ...extra, status: 'completed', completed_at: now },
       });
       if (claimed.count !== 1) return 0;
       await tx.trusted_devices.updateMany({
         where: {
-          user_id: rec.user_id,
-          id: { not: device.id },
+          user_id: userId,
+          id: { not: trustedDeviceId },
           revoked_at: null,
         },
         data: { status: 'revoked', revoked_at: now },
       });
       await tx.user_sessions.updateMany({
-        where: { user_id: rec.user_id },
+        where: { user_id: userId },
         data: { is_revoked: true },
       });
       await tx.trusted_devices.update({
-        where: { id: device.id },
+        where: { id: trustedDeviceId },
         data: { status: 'trusted', approved_at: now, revoked_at: null },
       });
       return 1;
     });
     if (!result) throw new BadRequestException('Recovery already completed');
-    await this.audit(
-      rec.user_id,
-      'DEVICE_RECOVERED',
-      device.id,
-      {
-        recovery_id: rec.id,
-      },
-      ip,
-    );
+  }
+
+  private async notifyRecovered(userId: string) {
     try {
       await this.notifications.sendSms(
         (
           await this.prisma.users.findUnique({
-            where: { id: rec.user_id },
+            where: { id: userId },
             select: { phone: true },
           })
         )?.phone ?? '',
@@ -622,6 +689,95 @@ export class DeviceBindingService {
     } catch {
       /* best effort */
     }
-    return { data: { status: 'trusted' } };
+  }
+
+  // ── Admin manual review ─────────────────────────────────────────────────
+  async listRecoveryReviews() {
+    const rows = await this.prisma.device_recoveries.findMany({
+      where: { status: { in: ['manual_review', 'verifying'] } },
+      orderBy: { created_at: 'asc' },
+      take: 100,
+      select: {
+        id: true,
+        user_id: true,
+        trusted_device_id: true,
+        status: true,
+        didit_session_id: true,
+        didit_status: true,
+        review_reason: true,
+        face_match_score: true,
+        created_at: true,
+      },
+    });
+    return { data: rows };
+  }
+
+  async approveRecoveryReview(
+    recoveryId: string,
+    adminId: string,
+    ip?: string,
+  ) {
+    const rec = await this.prisma.device_recoveries.findUnique({
+      where: { id: recoveryId },
+    });
+    if (!rec || !['manual_review', 'verifying'].includes(rec.status)) {
+      throw new NotFoundException('No recovery awaiting review');
+    }
+    await this.finalizeRecovery(
+      rec.id,
+      rec.user_id,
+      rec.trusted_device_id,
+      ['manual_review', 'verifying'],
+      { reviewed_by: adminId, reviewed_at: new Date() },
+    );
+    await this.audit(
+      rec.user_id,
+      'DEVICE_RECOVERY_REVIEW_APPROVED',
+      rec.trusted_device_id,
+      { recovery_id: rec.id, admin_id: adminId, reasons: rec.review_reason },
+      ip,
+    );
+    await this.notifyRecovered(rec.user_id);
+    return { data: { status: 'completed' } };
+  }
+
+  async rejectRecoveryReview(
+    recoveryId: string,
+    adminId: string,
+    reason: string | undefined,
+    ip?: string,
+  ) {
+    const rec = await this.prisma.device_recoveries.findUnique({
+      where: { id: recoveryId },
+    });
+    if (!rec || !['manual_review', 'verifying'].includes(rec.status)) {
+      throw new NotFoundException('No recovery awaiting review');
+    }
+    const now = new Date();
+    const done = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.device_recoveries.updateMany({
+        where: { id: rec.id, status: { in: ['manual_review', 'verifying'] } },
+        data: { status: 'rejected', reviewed_by: adminId, reviewed_at: now },
+      });
+      if (claimed.count !== 1) return 0;
+      await tx.trusted_devices.updateMany({
+        where: { id: rec.trusted_device_id, status: 'pending' },
+        data: { status: 'rejected' },
+      });
+      return 1;
+    });
+    if (!done) throw new BadRequestException('Recovery already decided');
+    await this.audit(
+      rec.user_id,
+      'DEVICE_RECOVERY_REVIEW_REJECTED',
+      rec.trusted_device_id,
+      {
+        recovery_id: rec.id,
+        admin_id: adminId,
+        note: reason?.slice(0, 300) ?? null,
+      },
+      ip,
+    );
+    return { data: { status: 'rejected' } };
   }
 }

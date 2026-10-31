@@ -5,11 +5,16 @@ import { DeviceBindingService } from './device-binding.service';
 import {
   DeviceAdminController,
   DeviceBindingController,
+  DeviceRecoveryAdminController,
 } from './device-binding.controller';
 
 @Module({
   imports: [NotificationsModule, DiditModule],
-  controllers: [DeviceBindingController, DeviceAdminController],
+  controllers: [
+    DeviceBindingController,
+    DeviceAdminController,
+    DeviceRecoveryAdminController,
+  ],
   providers: [DeviceBindingService],
   exports: [DeviceBindingService],
 })

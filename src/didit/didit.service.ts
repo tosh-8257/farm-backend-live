@@ -544,6 +544,20 @@ export class DiditService {
                 : { id: vendorData, NOT: { kyc_status: 'verified' } },
             data: { kyc_status: kycStatus },
           });
+
+          // Remember the approved KYC session as the identity reference used
+          // to prove account ownership during device recovery. First approval
+          // wins; a later session never silently replaces the reference.
+          if (kycStatus === 'verified' && typeof flat.session_id === 'string') {
+            await transaction.kyc_identity_references.upsert({
+              where: { user_id: vendorData },
+              create: {
+                user_id: vendorData,
+                didit_session_id: flat.session_id.slice(0, 128),
+              },
+              update: {},
+            });
+          }
         },
         { maxWait: 1_000, timeout: 4_000 },
       );
