@@ -12,7 +12,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../database/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
-import { AiProvider, ChatMessage } from './ai-provider';
+import { AiProvider, ChatMessage, ProviderUsage } from './ai-provider';
+import { MkulimaBillingService } from './mkulima-billing.service';
 import { AiToolsService } from './ai-tools.service';
 import { TravelService } from '../travel/travel.service';
 import { AgentPaymentsService } from '../agent-payments/agent-payments.service';
@@ -92,6 +93,7 @@ export class AiAssistantService {
     private readonly travel: TravelService,
     private readonly agentPayments: AgentPaymentsService,
     @Optional() private readonly hotels?: HotelsService,
+    @Optional() private readonly billing?: MkulimaBillingService,
   ) {}
 
   status() {
@@ -171,6 +173,8 @@ export class AiAssistantService {
         'Daily assistant message limit reached',
         HttpStatus.TOO_MANY_REQUESTS,
       );
+    // Silent billing: blocks with a plain top-up message when the wallet is too low.
+    await this.billing?.assertCanUse(userId, this.provider.model());
 
     let conv = conversationId
       ? await this.prisma.ai_conversations.findFirst({
@@ -212,125 +216,139 @@ export class AiAssistantService {
       { role: 'user', content: message },
     ];
     const proposed: unknown[] = [];
+    const usages: ProviderUsage[] = [];
     let reply = '';
-    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      const out = await this.provider.complete(
-        msgs,
-        round < MAX_TOOL_ROUNDS ? this.tools.specs() : [],
-      );
-      if (!out.tool_calls?.length) {
-        reply = (out.content ?? '').trim();
-        break;
-      }
-      msgs.push(out);
-      for (const call of out.tool_calls) {
-        let args: Record<string, unknown>;
-        try {
-          args = JSON.parse(call.function.arguments || '{}') as Record<
-            string,
-            unknown
-          >;
-        } catch {
-          args = {};
+    try {
+      for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+        const { usage, ...out } = await this.provider.complete(
+          msgs,
+          round < MAX_TOOL_ROUNDS ? this.tools.specs() : [],
+        );
+        if (usage) usages.push(usage);
+        if (!out.tool_calls?.length) {
+          reply = (out.content ?? '').trim();
+          break;
         }
-        let result: unknown;
-        try {
-          if (call.function.name === 'propose_payment') {
-            const req = await this.proposePayment(userId, args, conv.id);
-            proposed.push(req);
-            result = {
-              status: 'pending_user_confirmation',
-              request_id: req.id,
-              amount: Number(req.amount),
-              recipient: req.recipient_identifier,
-              expires_at: req.expires_at,
-            };
-          } else if (call.function.name === 'propose_flight_booking') {
-            const req = await this.proposeFlight(userId, args, conv.id);
-            proposed.push(req);
-            result = {
-              status: 'pending_user_confirmation',
-              request_id: req.id,
-              price_farm: Number(req.amount),
-              note: 'The user must open the request, enter passenger details and confirm with their PIN.',
-            };
-          } else if (call.function.name === 'propose_intent_payment') {
-            const req = await this.proposeIntent(userId, args, conv.id);
-            proposed.push(req);
-            result = {
-              status: 'pending_user_confirmation',
-              request_id: req.id,
-              amount: Number(req.amount),
-              business: req.recipient_identifier,
-            };
-          } else if (call.function.name === 'get_agent_payment_requests') {
-            result = {
-              requests: (
-                await this.agentPayments.myRequests(userId, 'pending')
-              ).map((r) => ({
-                id: r.id,
-                business: r.business_name,
-                amount: r.amount,
-                description: r.description,
-                expires_at: r.expires_at,
-              })),
-              note: 'The user approves these in Payments > Agent requests with their PIN.',
-            };
-          } else if (call.function.name === 'search_hotels') {
-            result = await this.searchHotels(args);
-          } else if (call.function.name === 'propose_hotel_booking') {
-            const req = await this.proposeHotel(userId, args, conv.id);
-            proposed.push(req);
-            result = {
-              status: 'pending_user_confirmation',
-              request_id: req.id,
-              price_farm: Number(req.amount),
-              hotel: req.recipient_identifier,
-              note: 'The user confirms this booking in the chat with their PIN. Guest details come from their profile.',
-            };
-          } else if (
-            call.function.name === 'search_flights' &&
-            !this.travel.enabled()
-          ) {
-            result = {
-              available: false,
-              message: 'Flights are not available yet.',
-            };
-          } else if (call.function.name === 'search_flights') {
-            const offers = await this.travel.search(args as any);
-            result = {
-              offers: offers.slice(0, 5).map((o) => ({
-                offer_id: o.id,
-                airline: o.owner,
-                price_farm: o.price_farm,
-                bookable: o.bookable,
-                slices: o.slices.map((x) => ({
-                  from: x.origin,
-                  to: x.destination,
-                  departs: x.segments[0]?.departing_at,
-                  stops: x.segments.length - 1,
-                })),
-              })),
-            };
-          } else if (call.function.name === 'get_spend_permissions') {
-            result = await this.getPermissions(userId);
-          } else {
-            result = await this.tools.run(userId, call.function.name, args);
+        msgs.push(out);
+        for (const call of out.tool_calls) {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(call.function.arguments || '{}') as Record<
+              string,
+              unknown
+            >;
+          } catch {
+            args = {};
           }
-        } catch (e) {
-          result = { error: (e as Error).message };
+          let result: unknown;
+          try {
+            if (call.function.name === 'propose_payment') {
+              const req = await this.proposePayment(userId, args, conv.id);
+              proposed.push(req);
+              result = {
+                status: 'pending_user_confirmation',
+                request_id: req.id,
+                amount: Number(req.amount),
+                recipient: req.recipient_identifier,
+                expires_at: req.expires_at,
+              };
+            } else if (call.function.name === 'propose_flight_booking') {
+              const req = await this.proposeFlight(userId, args, conv.id);
+              proposed.push(req);
+              result = {
+                status: 'pending_user_confirmation',
+                request_id: req.id,
+                price_farm: Number(req.amount),
+                note: 'The user must open the request, enter passenger details and confirm with their PIN.',
+              };
+            } else if (call.function.name === 'propose_intent_payment') {
+              const req = await this.proposeIntent(userId, args, conv.id);
+              proposed.push(req);
+              result = {
+                status: 'pending_user_confirmation',
+                request_id: req.id,
+                amount: Number(req.amount),
+                business: req.recipient_identifier,
+              };
+            } else if (call.function.name === 'get_agent_payment_requests') {
+              result = {
+                requests: (
+                  await this.agentPayments.myRequests(userId, 'pending')
+                ).map((r) => ({
+                  id: r.id,
+                  business: r.business_name,
+                  amount: r.amount,
+                  description: r.description,
+                  expires_at: r.expires_at,
+                })),
+                note: 'The user approves these in Payments > Agent requests with their PIN.',
+              };
+            } else if (call.function.name === 'search_hotels') {
+              result = await this.searchHotels(args);
+            } else if (call.function.name === 'propose_hotel_booking') {
+              const req = await this.proposeHotel(userId, args, conv.id);
+              proposed.push(req);
+              result = {
+                status: 'pending_user_confirmation',
+                request_id: req.id,
+                price_farm: Number(req.amount),
+                hotel: req.recipient_identifier,
+                note: 'The user confirms this booking in the chat with their PIN. Guest details come from their profile.',
+              };
+            } else if (
+              call.function.name === 'search_flights' &&
+              !this.travel.enabled()
+            ) {
+              result = {
+                available: false,
+                message: 'Flights are not available yet.',
+              };
+            } else if (call.function.name === 'search_flights') {
+              const offers = await this.travel.search(args as any);
+              result = {
+                offers: offers.slice(0, 5).map((o) => ({
+                  offer_id: o.id,
+                  airline: o.owner,
+                  price_farm: o.price_farm,
+                  bookable: o.bookable,
+                  slices: o.slices.map((x) => ({
+                    from: x.origin,
+                    to: x.destination,
+                    departs: x.segments[0]?.departing_at,
+                    stops: x.segments.length - 1,
+                  })),
+                })),
+              };
+            } else if (call.function.name === 'get_spend_permissions') {
+              result = await this.getPermissions(userId);
+            } else {
+              result = await this.tools.run(userId, call.function.name, args);
+            }
+          } catch (e) {
+            result = { error: (e as Error).message };
+          }
+          await this.audit(userId, 'tool_call', {
+            tool: call.function.name,
+            conversation_id: conv.id,
+          });
+          msgs.push({
+            role: 'tool',
+            tool_call_id: call.id,
+            name: call.function.name,
+            content: JSON.stringify(result),
+          });
         }
-        await this.audit(userId, 'tool_call', {
-          tool: call.function.name,
-          conversation_id: conv.id,
-        });
-        msgs.push({
-          role: 'tool',
-          tool_call_id: call.id,
-          name: call.function.name,
-          content: JSON.stringify(result),
-        });
       }
+    } finally {
+      // Charge for what the provider actually consumed, even if a later round failed.
+      if (usages.length)
+        await this.billing?.charge({
+          userId,
+          kind: 'chat',
+          model: this.provider.model(),
+          conversationId: conv.id,
+          usages,
+        });
     }
     if (!reply) reply = 'Sorry, I could not complete that. Please try again.';
     const saved = await this.prisma.ai_messages.create({

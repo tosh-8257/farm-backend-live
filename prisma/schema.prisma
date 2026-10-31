@@ -961,6 +961,7 @@ enum transaction_type {
   investment_settlement
   conversion
   cross_border
+  mkulima_usage
 }
 
 enum user_role {
@@ -2083,4 +2084,32 @@ model kyc_identity_references {
   user_id          String   @id @db.Uuid
   didit_session_id String   @db.VarChar(128)
   created_at       DateTime @default(now()) @db.Timestamp(6)
+}
+
+/// One row per billed Mkulima use, with the provider's real usage and the cost it implies.
+model mkulima_usage {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String   @db.Uuid
+  conversation_id   String?  @db.Uuid
+  kind              String   @db.VarChar(20)
+  model             String   @db.VarChar(100)
+  provider_calls    Int      @default(0)
+  prompt_tokens     Int      @default(0)
+  cached_tokens     Int      @default(0)
+  completion_tokens Int      @default(0)
+  audio_seconds     Decimal  @default(0) @db.Decimal(12, 3)
+  cost_source       String   @db.VarChar(20)
+  provider_cost_usd Decimal  @db.Decimal(20, 10)
+  usd_kes_rate      Decimal  @db.Decimal(20, 8)
+  cost_farm         Decimal  @db.Decimal(30, 8)
+  margin_farm       Decimal  @db.Decimal(30, 8)
+  charge_farm       Decimal  @db.Decimal(30, 8)
+  transaction_ref   String?  @db.VarChar(255)
+  status            String   @db.VarChar(20)
+  shortfall_farm    Decimal  @default(0) @db.Decimal(30, 8)
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([user_id, created_at(sort: Desc)])
+  @@index([created_at])
+  @@index([transaction_ref])
 }
