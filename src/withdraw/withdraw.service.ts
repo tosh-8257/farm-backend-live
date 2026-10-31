@@ -36,13 +36,16 @@ function envNumber(name: string, fallback: number): number {
  * Per-user rolling 24h withdrawal limits. 0 disables a limit.
  * - maxCount: all methods combined.
  * - maxAmount (FARM): bank / mobile money only.
- * - cryptoMaxUsd (USD): NOWPayments crypto only, valued at the live FARM/USD rate.
+ * - cryptoMaxUsd (USD): per single NOWPayments crypto withdrawal.
+ * - cryptoDailyMaxUsd (USD): NOWPayments crypto only, rolling 24h.
+ * Crypto USD values use the live FARM/USD rate.
  */
 export function withdrawalDailyLimits() {
   return {
     maxCount: envNumber('WITHDRAWAL_DAILY_MAX_COUNT', 5),
     maxAmount: envNumber('WITHDRAWAL_DAILY_MAX_AMOUNT', 1_000_000),
-    cryptoMaxUsd: envNumber('CRYPTO_WITHDRAWAL_DAILY_MAX_USD', 100_000),
+    cryptoMaxUsd: envNumber('CRYPTO_WITHDRAWAL_MAX_USD', 100_000),
+    cryptoDailyMaxUsd: envNumber('CRYPTO_WITHDRAWAL_DAILY_MAX_USD', 1_000_000),
   };
 }
 
@@ -1726,7 +1729,8 @@ export class WithdrawService {
       throw new BadRequestException('Insufficient balance for this withdrawal');
     }
     const isCrypto = opts.cryptoFarmUsdRate !== undefined;
-    const { maxCount, maxAmount, cryptoMaxUsd } = withdrawalDailyLimits();
+    const { maxCount, maxAmount, cryptoMaxUsd, cryptoDailyMaxUsd } =
+      withdrawalDailyLimits();
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const baseWhere = {
       userId,
@@ -1746,19 +1750,24 @@ export class WithdrawService {
       }
     }
     if (isCrypto) {
-      if (cryptoMaxUsd > 0) {
-        const rate = Number(opts.cryptoFarmUsdRate);
-        if (!Number.isFinite(rate) || rate <= 0) {
-          throw new BadRequestException('Live FARM/USD rate unavailable');
-        }
+      const rate = Number(opts.cryptoFarmUsdRate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new BadRequestException('Live FARM/USD rate unavailable');
+      }
+      if (cryptoMaxUsd > 0 && amount * rate > cryptoMaxUsd) {
+        throw new BadRequestException(
+          `Maximum crypto withdrawal is USD ${cryptoMaxUsd.toLocaleString()} per withdrawal`,
+        );
+      }
+      if (cryptoDailyMaxUsd > 0) {
         const recent = await tx.withdrawal.aggregate({
           where: { ...baseWhere, method: 'CRYPTO' },
           _sum: { amount: true },
         });
         const totalFarm = Number(recent?._sum?.amount ?? 0) + amount;
-        if (totalFarm * rate > cryptoMaxUsd) {
+        if (totalFarm * rate > cryptoDailyMaxUsd) {
           throw new BadRequestException(
-            `Daily crypto withdrawal limit is USD ${cryptoMaxUsd.toLocaleString()} per 24 hours`,
+            `Daily crypto withdrawal limit is USD ${cryptoDailyMaxUsd.toLocaleString()} per 24 hours`,
           );
         }
       }
