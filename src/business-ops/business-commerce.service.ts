@@ -28,8 +28,10 @@ const PAYABLE = ['sent', 'pending', 'overdue'];
 /** Public base URL for shareable pay pages. Not a secret; configurable per environment. */
 export function payBaseUrl() {
   return (
+    // Pay pages are served by the backend (/api/pay/...). APP_URL points at the
+    // web app, which does not proxy /api, so it must not be used here.
+    process.env.PAYMENT_BASE_URL ||
     process.env.BUSINESS_PAY_BASE_URL ||
-    process.env.APP_URL ||
     'https://farm-backend-r64g.onrender.com'
   ).replace(/\/+$/, '');
 }
