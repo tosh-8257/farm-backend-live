@@ -34,7 +34,8 @@ import { Throttle } from '@nestjs/throttler';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AiAssistantService } from './ai-assistant.service';
-import { VOICE_MAX_BYTES, VoiceService } from './voice.service';
+import { STT_MODEL, VOICE_MAX_BYTES, VoiceService } from './voice.service';
+import { MkulimaBillingService } from './mkulima-billing.service';
 
 class ChatDto {
   @IsNotEmpty() @IsString() @MaxLength(2000) message!: string;
@@ -71,6 +72,7 @@ export class AiAssistantController {
   constructor(
     private readonly svc: AiAssistantService,
     private readonly voice: VoiceService,
+    private readonly billing: MkulimaBillingService,
   ) {}
 
   @Get('status') status() {
@@ -96,8 +98,20 @@ export class AiAssistantController {
       limits: { fileSize: VOICE_MAX_BYTES, files: 1 },
     }),
   )
-  transcribe(@UploadedFile() file: Express.Multer.File, @Body() dto: VoiceDto) {
-    return this.voice.transcribe(file, dto?.language);
+  async transcribe(
+    @CurrentUser() u: any,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: VoiceDto,
+  ) {
+    await this.billing.assertCanUse(u.id, STT_MODEL, 'voice');
+    const out = await this.voice.transcribe(file, dto?.language);
+    await this.billing.charge({
+      userId: u.id,
+      kind: 'voice',
+      model: STT_MODEL,
+      audioSeconds: Number(out.duration ?? 0),
+    });
+    return out;
   }
 
   @Get('conversations') async list(@CurrentUser() u: any) {

@@ -2153,6 +2153,7 @@ export class AdminService {
       deposit: 'Deposit fees',
       swap: 'Swap fees',
       investment: 'Investment fees',
+      mkulima_usage: 'Mkulima AI margin',
     };
     if (known[type]) return known[type];
     const words = type.replace(/_/g, ' ').trim();
