@@ -18,6 +18,18 @@ export interface AsaCreated {
 /** Thin wrapper around algod. Secrets are read at call time and never logged. */
 @Injectable()
 export class AlgorandAsaClient {
+  /** Issuer (manager/reserve/freeze/clawback) signer. Caller must wipe(). */
+  issuerSigner(): AlgoSigner {
+    try {
+      return signerFromMnemonic(
+        process.env.ALGORAND_ISSUER_MNEMONIC!,
+        roleScheme('ALGORAND_ISSUER'),
+      );
+    } catch {
+      throw new ServiceUnavailableException('Issuer account is misconfigured');
+    }
+  }
+
   async createAsset(p: {
     assetName: string;
     unitName: string;

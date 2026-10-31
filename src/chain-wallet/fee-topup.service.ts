@@ -90,9 +90,18 @@ export class FeeTopupService {
     return BigInt(agg._sum.micro_algos ?? 0);
   }
 
-  /** Top up one address if needed. Never throws. */
-  async ensure(address: string, reason = 'sync'): Promise<TopupResult> {
-    const cfg = topupConfig();
+  /**
+   * Top up one address if needed. Never throws. `needSpendable` (microALGO)
+   * raises the target, e.g. 0.1 ALGO of min balance before a token opt-in;
+   * the same per-wallet / global daily caps and funder floor still apply.
+   */
+  async ensure(
+    address: string,
+    reason = 'sync',
+    needSpendable = 0n,
+  ): Promise<TopupResult> {
+    const base = topupConfig();
+    const cfg = { ...base };
     if (!cfg.enabled) return 'disabled';
     try {
       // Receive-only: FARM custodial wallets only (never the reserve/outside).
@@ -107,7 +116,10 @@ export class FeeTopupService {
         return 'not_farm_wallet';
       const info = await this.chain.algoInfo(address);
       const spendable = info.amount - info.minBalance;
+      if (needSpendable > cfg.threshold) cfg.threshold = needSpendable;
       if (spendable >= cfg.threshold) return 'enough';
+      if (cfg.threshold - spendable > cfg.amount)
+        cfg.amount = cfg.threshold - spendable;
       if (
         (await this.sentSince({ address })) + cfg.amount >
         cfg.perWalletDaily

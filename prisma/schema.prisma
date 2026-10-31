@@ -1612,6 +1612,11 @@ model project_tokens {
   issuer_address  String?             @db.VarChar(64)
   /// Phase 6: FARM ASA the principal is denominated in (1 unit = 1 FARM = 1 KSh)
   farm_asset_id   BigInt?
+  /// 'post_funding' (minted after funding) or 'on_invest' (minted at listing,
+  /// supply = target, delivered as people invest)
+  mode            String              @default("post_funding") @db.VarChar(20)
+  unsold_units    BigInt?
+  closed_at       DateTime?           @db.Timestamptz(6)
   requested_by    String?             @db.Uuid
   reviewed_by     String?             @db.Uuid
   notes           String?
@@ -1632,10 +1637,22 @@ model token_allocations {
   user_id          String         @db.Uuid
   units            BigInt
   custody          String         @default("farm_custody") @db.VarChar(30)
+  /// held | owed | sending | delivered | clawback_pending | clawing | clawed_back | cancelled
+  status              String    @default("held") @db.VarChar(20)
+  address             String?   @db.VarChar(64)
+  tx_id               String?   @db.VarChar(64)
+  last_valid          BigInt?
+  attempts            Int       @default(0)
+  error               String?
+  delivered_at        DateTime? @db.Timestamptz(6)
+  clawback_tx_id      String?   @db.VarChar(64)
+  clawback_last_valid BigInt?
+  updated_at          DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   created_at       DateTime       @default(now()) @db.Timestamptz(6)
   token            project_tokens @relation(fields: [project_token_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([user_id])
+  @@index([status])
 }
 
 /// V2 Phase 6: custodial Algorand account per user. The secret key is

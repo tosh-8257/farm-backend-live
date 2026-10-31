@@ -21,6 +21,11 @@ import {
     AlgorandWalletClient,
     RateService,
   ],
-  exports: [ChainWalletService, ChainSyncService, FeeTopupService],
+  exports: [
+    ChainWalletService,
+    ChainSyncService,
+    FeeTopupService,
+    AlgorandWalletClient,
+  ],
 })
 export class ChainWalletModule {}
