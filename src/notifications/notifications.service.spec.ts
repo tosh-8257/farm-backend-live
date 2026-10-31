@@ -67,7 +67,7 @@ describe('NotificationsService.sendNotification for support replies', () => {
 });
 
 describe('NotificationsService.notifyTransfer', () => {
-  it('builds a richer transfer-received notification with sender and balance details', async () => {
+  it('builds a richer transfer-received notification with sender username and no balance', async () => {
     const prisma = {
       users: {
         findUnique: jest.fn().mockImplementation(({ where }: any) => {
@@ -112,7 +112,7 @@ describe('NotificationsService.notifyTransfer', () => {
       'receiver-id',
       expect.objectContaining({
         title: '💰 Money Received',
-        body: expect.stringContaining('John Mwangi sent you 250 FARM'),
+        body: expect.stringContaining('@john sent you 250 FARM.'),
       }),
     );
   });
