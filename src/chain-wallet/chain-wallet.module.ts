@@ -4,6 +4,7 @@ import { AlgorandWalletClient } from './algorand-wallet.client';
 import { RateService } from './rate.service';
 import { ChainWalletService } from './chain-wallet.service';
 import { ChainSyncService } from './chain-sync.service';
+import { FeeTopupService } from './fee-topup.service';
 import {
   AdminChainController,
   ChainWalletController,
@@ -16,9 +17,10 @@ import {
   providers: [
     ChainWalletService,
     ChainSyncService,
+    FeeTopupService,
     AlgorandWalletClient,
     RateService,
   ],
-  exports: [ChainWalletService, ChainSyncService],
+  exports: [ChainWalletService, ChainSyncService, FeeTopupService],
 })
 export class ChainWalletModule {}

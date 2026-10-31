@@ -115,6 +115,51 @@ export class AlgorandWalletClient {
     }
   }
 
+  /** ALGO balance and min balance (microALGO) of an account. */
+  async algoInfo(
+    address: string,
+  ): Promise<{ amount: bigint; minBalance: bigint }> {
+    const a: any = await this.algod().accountInformation(address).do();
+    return {
+      amount: BigInt(a.amount ?? 0),
+      minBalance: BigInt(a.minBalance ?? a['min-balance'] ?? 0),
+    };
+  }
+
+  /** Funder ALGO payment, signed now, sent later (txId known before send). */
+  async prepareFund(
+    address: string,
+    microAlgos: bigint,
+    note: string,
+  ): Promise<PreparedTransfer> {
+    const f = this.funder();
+    try {
+      const sp = await this.algod().getTransactionParams().do();
+      const t = algosdk.makePaymentTxnWithSuggestedParamsFromObject({
+        sender: f.address,
+        receiver: address,
+        amount: microAlgos,
+        note: new TextEncoder().encode(note),
+        suggestedParams: {
+          ...sp,
+          flatFee: true,
+          fee: AlgorandWalletClient.fee(sp.minFee, f.scheme),
+        },
+      });
+      const signed = await f.sign([t]);
+      const txId = t.txID();
+      return {
+        txId,
+        lastValid: BigInt(t.lastValid),
+        send: async () => {
+          await this.sendSigned(signed, txId);
+        },
+      };
+    } finally {
+      f.wipe();
+    }
+  }
+
   /** Opt-in signed by the account; its fee is paid by the funder (pooled). */
   async optIn(address: string, signer: AlgoSigner, assetId: bigint) {
     const f = this.funder();
