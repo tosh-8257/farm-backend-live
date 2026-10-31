@@ -16,6 +16,7 @@ import {
   settlementWalletFor,
 } from './business-wallet';
 import { generateTxReference } from '../common/utils/reference.util';
+import { chainConfig } from '../chain-wallet/chain-config';
 
 /** UI status -> stored transaction_status. */
 export const TX_STATUS_MAP: Record<string, string> = {
@@ -80,12 +81,32 @@ export class BusinessFinanceService {
         is_frozen: w.is_frozen,
         kind: w.wallet_type === 'merchant' ? 'business' : 'personal',
         separate_from_personal: w.wallet_type === 'merchant',
+        // The business's own custodial Algorand account (receive address).
+        chain_account:
+          w.wallet_type === 'merchant' ? await this.chainAccount(w.id) : null,
         can_move_to_personal:
           businessWalletEnabled() &&
           w.wallet_type === 'merchant' &&
           a.role === 'owner',
       },
     };
+  }
+
+  private async chainAccount(walletId: string) {
+    if (!chainConfig().wallets.enabled) return null;
+    const c = await this.prisma.business_chain_wallets.findUnique({
+      where: { wallet_id: walletId },
+      select: { address: true, network: true, status: true },
+    });
+    return c
+      ? {
+          address: c.address,
+          network: c.network,
+          status: c.status,
+          ready: c.status === 'ready',
+          farm_asa_id: process.env.FARM_ASA_ID ?? null,
+        }
+      : null;
   }
 
   /**

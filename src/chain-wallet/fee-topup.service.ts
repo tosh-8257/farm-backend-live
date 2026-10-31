@@ -105,9 +105,13 @@ export class FeeTopupService {
     if (!cfg.enabled) return 'disabled';
     try {
       // Receive-only: FARM custodial wallets only (never the reserve/outside).
-      const w = await this.prisma.user_chain_wallets.findUnique({
-        where: { address },
-      });
+      const w =
+        (await this.prisma.user_chain_wallets.findUnique({
+          where: { address },
+        })) ??
+        (await this.prisma.business_chain_wallets?.findUnique({
+          where: { address },
+        }));
       if (
         !w ||
         w.status !== 'ready' ||
@@ -143,7 +147,7 @@ export class FeeTopupService {
         row = await this.prisma.chain_fee_topups.create({
           data: {
             network: chainConfig().network,
-            user_id: w.user_id,
+            user_id: 'user_id' in w ? w.user_id : null,
             address,
             micro_algos: cfg.amount,
             spendable_before: spendable,

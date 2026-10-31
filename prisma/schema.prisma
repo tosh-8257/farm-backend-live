@@ -2268,3 +2268,25 @@ model project_funds_audit {
   @@index([project_id, created_at])
   @@index([action, created_at])
 }
+
+/// Custodial Algorand account of a business (merchant) wallet
+/// (BUSINESS_WALLET_ENABLED). Secret sealed with WALLET_KEY_ENCRYPTION_KEY, never returned.
+model business_chain_wallets {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  business_id    String   @unique @db.Uuid
+  wallet_id      String   @unique @db.Uuid
+  network        String   @db.VarChar(20)
+  address        String   @unique @db.VarChar(64)
+  enc_secret     String
+  enc_iv         String   @db.VarChar(32)
+  enc_tag        String   @db.VarChar(32)
+  key_version    Int      @default(1)
+  key_scheme     String   @default("ed25519") @db.VarChar(16)
+  funded_tx_id   String?  @db.VarChar(64)
+  farm_opt_in_tx String?  @db.VarChar(64)
+  /// created | provisioning | ready | failed
+  status         String   @default("created") @db.VarChar(20)
+  error          String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}

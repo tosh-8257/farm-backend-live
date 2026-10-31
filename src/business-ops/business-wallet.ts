@@ -1,8 +1,9 @@
-import { Prisma } from '@prisma/client';
 import {
   generateTxReference,
   generateWalletAddress,
 } from '../common/utils/reference.util';
+import { chainConfig } from '../chain-wallet/chain-config';
+import { createBusinessChainAccount } from '../chain-wallet/business-chain.service';
 
 /**
  * Business (merchant) wallet, separate from the owner's personal wallet.
@@ -24,7 +25,8 @@ export const businessWalletEnabled = (
   env: Record<string, string | undefined> = process.env,
 ) => env.BUSINESS_WALLET_ENABLED === 'true';
 
-type Db = Prisma.TransactionClient | any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Db = any;
 
 async function personal(db: Db, ownerUserId: string) {
   return (
@@ -91,6 +93,16 @@ export async function ensureBusinessWallet(
     });
     return db.wallets.findUnique({ where: { id: again!.wallet_id! } });
   }
+  // Own custodial Algorand account, created with the wallet. Only with the
+  // root client (inside a caller's transaction the 60s tick creates it).
+  if (typeof db.$transaction === 'function') {
+    try {
+      if (chainConfig().wallets.enabled)
+        await createBusinessChainAccount(db, business.id, w.id);
+    } catch {
+      /* retried by BusinessChainService.tick; never logs key material */
+    }
+  }
   return w;
 }
 
@@ -146,7 +158,7 @@ export async function settlementWalletFor(
  * Free internal move between two wallets in one DB transaction (no fee).
  * Throws if the source's available balance (balance - locked) would go negative.
  */
-export async function internalMove(
+export function internalMove(
   prisma: any,
   p: {
     fromId: string;

@@ -278,6 +278,14 @@ export class WalletsService {
         data: { balance: { increment: receiverCredit } },
       });
       receiverUserId = receiverUserId ?? recvWallet.user_id ?? undefined;
+      // Business (merchant) wallets have no user_id: notify the business owner.
+      if (!receiverUserId && recvWallet.wallet_type === 'merchant') {
+        const owner = await tx.businesses.findFirst({
+          where: { wallet_id: receiverWalletId },
+          select: { owner_user_id: true },
+        });
+        receiverUserId = owner?.owner_user_id ?? undefined;
+      }
 
       await tx.ledger_entries.createMany({
         data: [

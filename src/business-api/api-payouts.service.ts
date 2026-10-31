@@ -162,7 +162,7 @@ export class ApiPayoutsService {
             description: 'Business payout funding',
             metadata: { business_id: ctx.businessId, payout_record: record.id },
           });
-        } catch (e: any) {
+        } catch {
           await this.prisma.business_api_payouts.update({
             where: { id: record.id },
             data: { status: 'failed', error: 'Insufficient business balance' },

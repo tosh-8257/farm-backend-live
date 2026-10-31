@@ -5,6 +5,7 @@ import { RateService } from './rate.service';
 import { ChainWalletService } from './chain-wallet.service';
 import { ChainSyncService } from './chain-sync.service';
 import { FeeTopupService } from './fee-topup.service';
+import { BusinessChainService } from './business-chain.service';
 import {
   AdminChainController,
   ChainWalletController,
@@ -18,6 +19,7 @@ import {
     ChainWalletService,
     ChainSyncService,
     FeeTopupService,
+    BusinessChainService,
     AlgorandWalletClient,
     RateService,
   ],
@@ -25,6 +27,7 @@ import {
     ChainWalletService,
     ChainSyncService,
     FeeTopupService,
+    BusinessChainService,
     AlgorandWalletClient,
   ],
 })
