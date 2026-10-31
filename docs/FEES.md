@@ -45,3 +45,19 @@ Fee semantics: `percent × amount + flat`, floored at `minimum_fee`, capped at `
 - **Admin approval** for every buyback. Delivered tokens are clawed back to the issuer on-chain first (txId stored before sending, idempotent); FARM is credited only after. Held/owed tokens are DB-only.
 - **Accounting:** `token_buyback` transaction, credit to the investor wallet, debit from the platform wallet with category `consolidation_fund`; `investment_projects.consolidation_bought_back`, `user_investments.sold_back_amount`, `token_allocations.sold_units`. Cancel/loss refunds use amount − sold_back_amount.
 - **Open decision:** on successful completion the remaining 15% fund is currently reclassified to FARM revenue (not returned to the business). That was left unchanged.
+
+## Token holder income — `TOKEN_DISTRIBUTIONS_ENABLED` (default off)
+
+- The business (or an admin on its behalf) requests a profit or rental distribution in FARM. An admin approves it.
+- On approval the backend takes a snapshot of current holders. Delivered holdings count by their on-chain balance in the holder's in-app wallet; held or owed holdings count by DB units minus sold-back units. The issuer's unsold and returned tokens are not counted. No snapshot is taken while tokens are moving.
+- One DB transaction debits the business owner's FARM wallet (guarded on balance) and credits each holder pro-rata, rounded down to 0.01 FARM. The rounding dust stays with the business. Each holder gets a payout row in `token_distribution_payouts`, unique per holder. Transaction type `token_distribution`, ledger category `token_distribution`.
+- **Fee: 0** (`DISTRIBUTION_FEE`). Decision pending.
+- No earlier profit-sharing code existed; the marketplace strips return promises (`stripReturns`).
+
+## Token transfers — `TOKEN_TRANSFERS_ENABLED` (default off)
+
+- Holders can send tokens to any FARM user by username or phone. Transaction PIN required.
+- Held or owed tokens move in the DB. Delivered tokens move on-chain from wallet to wallet; FARM's issuer signs as clawback account and the funder pays the network fee. The backend opts the recipient in, with ALGO from the capped top-up only.
+- **No transfer fee.** Only the network fee, paid by FARM.
+- Received tokens earn income but carry **no sell-back allowance**. Sell-back stays tied to the holder's own investment (15% of what they invested, limited to tokens they still hold).
+- On cancel, refunds still follow investments, so the original investor is refunded and received tokens are clawed back.
