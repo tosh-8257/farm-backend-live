@@ -146,7 +146,7 @@ export class IvorypayDepositService {
         fee: 0,
         net_amount: amount,
         currency: 'FARM',
-        description: `Pending crypto deposit via Ivorypay (${amount} FARM → ${amountUsd} USD)`,
+        description: `Crypto deposit via Ivorypay (${amount} FARM → ${amountUsd} USD)`,
         metadata: {
           provider: 'ivorypay',
           provider_ref: providerRef,

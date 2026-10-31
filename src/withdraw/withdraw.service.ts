@@ -238,7 +238,7 @@ export class WithdrawService {
           fee,
           net_amount: settlement,
           currency: 'FARM',
-          description: 'Pending withdrawal',
+          description: 'Withdrawal',
           metadata: {
             method: dto.method,
             provider: 'paystack',
@@ -438,7 +438,7 @@ export class WithdrawService {
           fee,
           net_amount: settlement,
           currency: 'FARM',
-          description: 'Pending NOWPayments crypto withdrawal',
+          description: 'Crypto withdrawal via NOWPayments',
           metadata: {
             provider: 'nowpayments',
             method: 'CRYPTO',

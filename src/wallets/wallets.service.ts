@@ -1,3 +1,4 @@
+import { cleanTransactionDescription } from '../common/utils/transaction-description';
 import {
   Injectable,
   BadRequestException,
@@ -448,6 +449,7 @@ export class WalletsService {
 
         return {
           ...t,
+          description: cleanTransactionDescription(t.description),
           amount: Number(t.amount),
           fee: Number(t.fee),
           net_amount: Number(t.net_amount),
