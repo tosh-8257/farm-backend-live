@@ -1,10 +1,11 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
 import { AlgorandWalletClient } from './algorand-wallet.client';
 import { chainConfig, FARM_DECIMALS } from './chain-config';
 import { walletSigner } from './key-vault';
 import { AlgoSigner } from './signer';
+import { FeeTopupService } from './fee-topup.service';
 
 const toUnits = (v: unknown) =>
   BigInt(Math.floor(Number(v ?? 0) * 10 ** FARM_DECIMALS));
@@ -31,6 +32,7 @@ export class ChainSyncService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly chain: AlgorandWalletClient,
+    @Optional() private readonly topup?: FeeTopupService,
   ) {}
 
   @Interval('farm-chain-sync', 30_000)
@@ -290,6 +292,7 @@ export class ChainSyncService {
         });
         if (!w || w.status !== 'ready')
           throw new Error('Sender wallet not ready');
+        await this.topup?.ensure(r.from_address, 'sync');
         sk = walletSigner(w);
       }
       const prep = await this.chain.prepareFarmTransfer({
