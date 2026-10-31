@@ -41,6 +41,7 @@ function mocks(over: any = {}) {
           project_id: PID,
           asset_name: 'Solar',
           unit_name: 'SOLAR',
+          accept_buyback_commitment: true,
           network: 'testnet',
           unit_price: 1,
           total_units: 0n,
@@ -114,7 +115,11 @@ describe('Phase 5 – tokenization flow', () => {
     await expect(
       mocks({
         project: { id: PID, status: 'listed', raised_amount: 5, token: null },
-      }).svc.request('u', PID, { asset_name: 'A', unit_name: 'A' }),
+      }).svc.request('u', PID, {
+        asset_name: 'A',
+        unit_name: 'A',
+        accept_buyback_commitment: true,
+      }),
     ).rejects.toThrow('funded');
     await expect(
       mocks().svc.request('u', PID, { asset_name: 'A', unit_name: 'bad-unit' }),
@@ -123,8 +128,12 @@ describe('Phase 5 – tokenization flow', () => {
     const r = await svc.request('u', PID, {
       asset_name: 'Solar',
       unit_name: 'solar',
+      accept_buyback_commitment: true,
     });
     expect(r.data.unit_name).toBe('SOLAR');
+    await expect(
+      mocks().svc.request('u', PID, { asset_name: 'Solar', unit_name: 'SOL' }),
+    ).rejects.toThrow(/15% buyback commitment/);
     expect(access.resolve).toHaveBeenCalledWith('u', 'projects:manage');
   });
   it('admin mint is refused (503 + missing names) while not configured, and nothing is claimed', async () => {

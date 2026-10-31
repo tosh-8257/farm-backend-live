@@ -3,12 +3,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { BusinessAccessService } from '../business-ops/business-access.service';
 import { AlgorandAsaClient } from './algorand-asa.client';
 import { algorandConfig, explorerAsset, explorerTx } from './algorand-config';
+import { TokenBuybackService, buybackEnabled } from './token-buyback.service';
 import { ON_INVEST_REQUESTABLE, onInvestConfig, unitsFor } from './on-invest';
 
 /** 1 token unit represents 1 FARM of principal invested (whole units only). */
@@ -35,6 +37,7 @@ export class TokenizationService {
     private readonly prisma: PrismaService,
     private readonly access: BusinessAccessService,
     private readonly chain: AlgorandAsaClient,
+    @Optional() private readonly buyback?: TokenBuybackService,
   ) {}
 
   status() {
@@ -95,7 +98,12 @@ export class TokenizationService {
   async request(
     userId: string,
     projectId: string,
-    dto: { asset_name: string; unit_name: string; mode?: string },
+    dto: {
+      accept_buyback_commitment?: boolean;
+      asset_name: string;
+      unit_name: string;
+      mode?: string;
+    },
   ) {
     const onInvest = dto.mode === 'on_invest';
     const actor = await this.access.resolve(userId, 'projects:manage');
@@ -131,7 +139,14 @@ export class TokenizationService {
       throw new BadRequestException('asset_name must be 1-32 bytes');
     if (!unit || !/^[A-Z0-9]{1,8}$/.test(unit))
       throw new BadRequestException('unit_name must be 1-8 letters or digits');
+    // The business agrees that 15% of what the project raises is held back
+    // from it as the investor buyback pool (sell-back up to 15% each).
+    if (dto.accept_buyback_commitment !== true)
+      throw new BadRequestException(
+        'Please accept the 15% buyback commitment to tokenize this project',
+      );
     const data = {
+      buyback_commitment_at: new Date(),
       status: 'requested',
       mode: onInvest ? 'on_invest' : 'post_funding',
       network: algorandConfig().network,
@@ -433,8 +448,19 @@ export class TokenizationService {
         },
       },
     });
+    // Per-project sell-back allowance (15% of what this investor put in).
+    const allow = new Map<string, any>();
+    if (this.buyback && buybackEnabled())
+      for (const pid of new Set(rows.map((a) => a.token.project_id)))
+        allow.set(pid, await this.buyback.allowance(userId, pid));
     return {
+      buyback_enabled: buybackEnabled(),
       data: rows.map((a) => ({
+        sold_units: (a.sold_units ?? 0n).toString(),
+        sellable_units: (
+          BigInt(a.units) - BigInt(a.sold_units ?? 0n)
+        ).toString(),
+        sell_back: allow.get(a.token.project_id) ?? null,
         id: a.id,
         investment_id: a.investment_id,
         units: a.units.toString(),
