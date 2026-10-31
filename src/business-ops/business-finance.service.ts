@@ -270,6 +270,7 @@ export class BusinessFinanceService {
                 Number(w.balance) - Number(w.locked_balance),
               ),
               currency: w.currency,
+              kind: w.wallet_type === 'merchant' ? 'business' : 'personal',
             }
           : null,
         last_30_days: showMoney
