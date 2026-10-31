@@ -2286,6 +2286,7 @@ model business_chain_wallets {
   key_scheme     String   @default("ed25519") @db.VarChar(16)
   funded_tx_id   String?  @db.VarChar(64)
   farm_opt_in_tx String?  @db.VarChar(64)
+  usdc_opt_in_tx String?  @db.VarChar(64)
   /// created | provisioning | ready | failed
   status         String   @default("created") @db.VarChar(20)
   error          String?

@@ -88,16 +88,48 @@ export class BusinessChainService {
     });
   }
 
-  /** Fund min balance + FARM opt-in. Resumable; compare-and-set claim. */
+  /**
+   * ALGO top-up so the account can hold one more asset (USDC). Only the
+   * shortfall is sent, capped per account (BUSINESS_CHAIN_USDC_TOPUP_MAX_MICROALGOS,
+   * default 0.11 ALGO) and counted against the daily provisioning cap.
+   */
+  private async ensureOptInBalance(address: string) {
+    const info = await this.chain.algoInfo(address);
+    const need = info.minBalance + 100_000n + 2_000n; // +1 asset min balance + fee
+    if (info.amount >= need) return null;
+    const short = need - info.amount;
+    const cap = BigInt(
+      process.env.BUSINESS_CHAIN_USDC_TOPUP_MAX_MICROALGOS ?? '110000',
+    );
+    if (short > cap) throw new Error('USDC opt-in top-up exceeds cap');
+    const max = Number(process.env.BUSINESS_CHAIN_PROVISION_DAILY_MAX ?? 25);
+    if ((await this.provisionedToday()) >= max)
+      throw new Error('daily business account funding cap reached');
+    return this.chain.fund(address, short);
+  }
+
+  /**
+   * Fund min balance + FARM and USDC opt-ins. Resumable; compare-and-set
+   * claim. Also catches up ready accounts that predate the USDC opt-in: they
+   * stay ready (and keep syncing FARM) if the catch-up fails.
+   */
   async provision(id: string) {
+    const usdcAsa = process.env.USDC_ASA_ID;
     const claim = await this.prisma.business_chain_wallets.updateMany({
-      where: { id, status: { in: ['created', 'failed'] } },
+      where: {
+        id,
+        OR: [
+          { status: { in: ['created', 'failed'] } },
+          ...(usdcAsa ? [{ status: 'ready', usdc_opt_in_tx: null }] : []),
+        ],
+      },
       data: { status: 'provisioning', error: null },
     });
     if (!claim.count) return null;
     const w = (await this.prisma.business_chain_wallets.findUnique({
       where: { id },
     }))!;
+    const catchUp = !!w.funded_tx_id && !!w.farm_opt_in_tx;
     let sk: AlgoSigner | null = null;
     try {
       const data: Record<string, string> = {};
@@ -119,6 +151,15 @@ export class BusinessChainService {
           sk,
           BigInt(process.env.FARM_ASA_ID!),
         );
+      if (usdcAsa && !w.usdc_opt_in_tx) {
+        const asa = BigInt(usdcAsa);
+        if (await this.chain.isOptedIn(w.address, asa)) {
+          data.usdc_opt_in_tx = 'already-opted-in';
+        } else {
+          await this.ensureOptInBalance(w.address);
+          data.usdc_opt_in_tx = await this.chain.optIn(w.address, sk, asa);
+        }
+      }
       return await this.prisma.business_chain_wallets.update({
         where: { id },
         data: { ...data, status: 'ready' },
@@ -128,7 +169,8 @@ export class BusinessChainService {
       this.log.warn(`Business chain wallet ${id} provisioning failed: ${msg}`);
       await this.prisma.business_chain_wallets.update({
         where: { id },
-        data: { status: 'failed', error: msg },
+        // A failed USDC catch-up never takes a working FARM account offline.
+        data: { status: catchUp ? 'ready' : 'failed', error: msg },
       });
       return null;
     } finally {
@@ -149,7 +191,15 @@ export class BusinessChainService {
       });
       for (const b of missing) await this.ensureAccount(b.id, b.wallet_id!);
       const todo = await this.prisma.business_chain_wallets.findMany({
-        where: { status: { in: ['created', 'failed'] } },
+        where: {
+          OR: [
+            { status: { in: ['created', 'failed'] } },
+            // USDC catch-up; skip ones that already failed it (error set) until retried by an admin.
+            ...(process.env.USDC_ASA_ID
+              ? [{ status: 'ready', usdc_opt_in_tx: null, error: null }]
+              : []),
+          ],
+        },
         select: { id: true },
         take: 10,
       });
@@ -166,7 +216,12 @@ export class BusinessChainService {
     if (!this.enabled()) return null;
     const w = await this.prisma.business_chain_wallets.findUnique({
       where: { wallet_id: walletId },
-      select: { address: true, network: true, status: true },
+      select: {
+        address: true,
+        network: true,
+        status: true,
+        usdc_opt_in_tx: true,
+      },
     });
     if (!w) return null;
     return {
@@ -175,6 +230,8 @@ export class BusinessChainService {
       status: w.status,
       ready: w.status === 'ready',
       farm_asa_id: process.env.FARM_ASA_ID ?? null,
+      usdc_asa_id: process.env.USDC_ASA_ID ?? null,
+      usdc_ready: w.status === 'ready' && !!w.usdc_opt_in_tx,
     };
   }
 }

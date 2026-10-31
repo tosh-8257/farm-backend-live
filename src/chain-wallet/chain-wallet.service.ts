@@ -43,7 +43,11 @@ export class ChainWalletService {
    * deposit's user_id is the business owner; business_wallet_id routes the
    * credit to the business wallet, never the owner's personal one.
    */
-  private async businessOwners(network: string, addrs?: string[]) {
+  private async businessOwners(
+    network: string,
+    addrs?: string[],
+    usdcOnly = false,
+  ) {
     if (!businessWalletEnabled()) return [];
     const rows =
       (await (this.prisma as any).business_chain_wallets?.findMany({
@@ -51,6 +55,7 @@ export class ChainWalletService {
           network,
           status: 'ready',
           ...(addrs ? { address: { in: addrs } } : {}),
+          ...(usdcOnly ? { usdc_opt_in_tx: { not: null } } : {}),
         },
         select: {
           address: true,
@@ -281,10 +286,12 @@ export class ChainWalletService {
               where: { address: { in: addrs }, network: c.network },
               select: { address: true, user_id: true },
             })),
-            // Business accounts hold only FARM (no USDC opt-in).
-            ...(a.symbol === 'FARM'
-              ? await this.businessOwners(c.network, addrs)
-              : []),
+            // USDC only once the business account is opted in to it.
+            ...(await this.businessOwners(
+              c.network,
+              addrs,
+              a.symbol === 'USDC',
+            )),
           ]
         : [];
       const byAddr = new Map(owners.map((o) => [o.address, o.user_id]));

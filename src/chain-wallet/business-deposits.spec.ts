@@ -83,13 +83,20 @@ function svc(transfers: any[] = [], pending: any[] = []) {
   };
   const chain: any = {
     transfersSince: jest.fn((asset: bigint) =>
-      Promise.resolve(asset === 42n ? transfers : []),
+      Promise.resolve(
+        transfers.filter((x: any) => (x.assetId ?? 42n) === asset),
+      ),
     ),
     currentRound: jest.fn().mockResolvedValue(900n),
     funderAddress: jest.fn(() => 'FUNDER'),
     paymentsTo: jest.fn().mockResolvedValue([]),
   };
-  const rates: any = { usdcKes: jest.fn(), algoKes: jest.fn() };
+  const rates: any = {
+    usdcKes: jest
+      .fn()
+      .mockResolvedValue({ rate: 130, source: 'test', at: new Date() }),
+    algoKes: jest.fn(),
+  };
   const notifications: any = {
     createInApp: jest.fn().mockResolvedValue({}),
     sendPush: jest.fn().mockResolvedValue(true),
@@ -174,5 +181,24 @@ describe('business account deposits', () => {
     tx.chain_deposits.updateMany.mockResolvedValue({ count: 0 });
     expect((await s.creditPending()).credited).toBe(0);
     expect(notifications.createInApp).toHaveBeenCalledTimes(1);
+  });
+  it('USDC: scans only business accounts opted in to USDC, credited at the live rate to the business wallet', async () => {
+    process.env.BUSINESS_WALLET_ENABLED = 'true';
+    process.env.CHAIN_USDC_CONVERSION_ENABLED = 'true';
+    const { s, prisma } = svc([
+      { ...t('U', 'PERA', 'B1', 2_000_000n), assetId: 10458941n },
+    ]);
+    await s.pollDeposits();
+    const usdcCall = prisma.business_chain_wallets.findMany.mock.calls.find(
+      (c: any) => c[0].where.usdc_opt_in_tx,
+    );
+    expect(usdcCall[0].where.usdc_opt_in_tx).toEqual({ not: null });
+    expect(
+      rows(prisma).map((r: any) => [
+        r.tx_id,
+        r.asset_symbol,
+        r.business_wallet_id,
+      ]),
+    ).toEqual([['U', 'USDC', 'bw1']]);
   });
 });
