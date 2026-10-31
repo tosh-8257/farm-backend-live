@@ -24,10 +24,27 @@ function make(
         .mockResolvedValue({ wallets: [{ id: 'pw', balance: 0 }] }),
     },
     transactions: {
-      create: jest.fn().mockImplementation(({ data }) => {
-        created.tx.push(data);
-        return { id: 't1', ...data };
+      upsert: jest.fn().mockImplementation(({ where, create, update }) => {
+        const ex = created.tx.find(
+          (t: any) => t.transaction_reference === where.transaction_reference,
+        );
+        if (!ex) {
+          created.tx.push({ ...create });
+          return { id: 't1', ...create };
+        }
+        ex.amount += update.amount.increment;
+        ex.fee += update.fee.increment;
+        ex.net_amount += update.net_amount.increment;
+        return { id: 't1', ...ex };
       }),
+      findMany: jest
+        .fn()
+        .mockImplementation(() =>
+          created.tx.map((t: any, i: number) => ({ id: `t${i}`, ...t })),
+        ),
+      updateMany: jest
+        .fn()
+        .mockImplementation(({ where }) => ({ count: where.id.in.length })),
     },
     ledger_entries: {
       create: jest
@@ -39,10 +56,13 @@ function make(
         created.usage.push(data);
         return data;
       }),
+      findMany: jest.fn().mockImplementation(() => created.usage),
     },
   };
   const prisma: any = {
     wallets: tx.wallets,
+    transactions: tx.transactions,
+    mkulima_usage: tx.mkulima_usage,
     $transaction: (fn: any) => fn(tx),
   };
   const config: any = { get: (k: string) => env[k] };
@@ -149,7 +169,8 @@ describe('MkulimaBillingService', () => {
     const t = created.tx[0];
     expect(t.transaction_type).toBe('mkulima_usage');
     expect(t.description).toBe('Mkulima AI');
-    expect(t.status).toBe('completed');
+    expect(t.status).toBe('pending');
+    expect(t.transaction_reference).toMatch(/^MKAI-\d{8}-u$/);
     expect(t.amount).toBeCloseTo(0.4875, 8);
     expect(t.fee).toBeCloseTo(0.0975, 8);
     expect(t.receiver_wallet_id).toBe('pw');
@@ -220,5 +241,73 @@ describe('MkulimaBillingService', () => {
     const q = await svc.quote(0.01);
     expect(q.cost_farm).toBeCloseTo(1.3, 8);
     expect(q.margin_farm).toBeCloseTo(0.52, 8);
+  });
+
+  it('accrues every use of the day onto ONE Mkulima AI transaction, debiting per use', async () => {
+    const { svc, created, tx } = make({
+      MKULIMA_BILLING_ENABLED: 'true',
+      MKULIMA_PRICE_TABLE: TABLE,
+    });
+    const u = [usage({ prompt_tokens: 1000, output_tokens: 100 })];
+    await svc.charge({
+      userId: 'u',
+      kind: 'chat',
+      model: 'grok-4.3',
+      usages: u,
+    });
+    await svc.charge({
+      userId: 'u',
+      kind: 'chat',
+      model: 'grok-4.3',
+      usages: u,
+    });
+    expect(created.tx).toHaveLength(1);
+    expect(created.tx[0].amount).toBeCloseTo(0.975, 8);
+    expect(created.tx[0].fee).toBeCloseTo(0.195, 8);
+    expect(tx.wallets.updateMany).toHaveBeenCalledTimes(2);
+    expect(created.usage).toHaveLength(2);
+  });
+
+  it('uses the Nairobi day for the daily reference', () => {
+    const { svc } = make({});
+    // 22:30 UTC on Oct 31 is already Nov 1 in Nairobi
+    expect(svc.dayKey(new Date('2026-10-31T22:30:00Z'))).toBe('20261101');
+    expect(svc.dailyRef('ab-cd', '20261101')).toBe('MKAI-20261101-abcd');
+  });
+
+  it('settles past days only', async () => {
+    const { svc, created, tx } = make({ MKULIMA_BILLING_ENABLED: 'true' });
+    created.tx.push(
+      { transaction_reference: 'MKAI-20261030-u' },
+      { transaction_reference: 'MKAI-20261031-u' },
+    );
+    const r = await svc.settleDaily(new Date('2026-10-31T10:00:00Z'));
+    expect(r.settled).toBe(1);
+    expect(tx.transactions.updateMany.mock.calls[0][0].where.id.in).toEqual([
+      't0',
+    ]);
+  });
+
+  it('blocks at zero balance even when the floor is 0', async () => {
+    const { svc } = make(
+      {
+        MKULIMA_BILLING_ENABLED: 'true',
+        MKULIMA_PRICE_TABLE: TABLE,
+        MKULIMA_MIN_BALANCE_FARM: '0',
+      },
+      { id: 'w1', balance: 0, is_frozen: false },
+    );
+    const err = await svc.assertCanUse('u', 'grok-4.3').catch((e) => e);
+    expect((err as HttpException).getStatus()).toBe(402);
+  });
+
+  it('requires enough for the costliest recent use, not just the floor', async () => {
+    const { svc, created } = make(
+      { MKULIMA_BILLING_ENABLED: 'true', MKULIMA_PRICE_TABLE: TABLE },
+      { id: 'w1', balance: 2, is_frozen: false },
+    );
+    created.usage.push({ charge_farm: 3 });
+    const err = await svc.assertCanUse('u', 'grok-4.3').catch((e) => e);
+    expect((err as HttpException).getStatus()).toBe(402);
   });
 });

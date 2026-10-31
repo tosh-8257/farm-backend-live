@@ -23,6 +23,6 @@ CREATE TABLE IF NOT EXISTS "mkulima_usage" (
   "shortfall_farm" DECIMAL(30,8) NOT NULL DEFAULT 0,
   "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS "mkulima_usage_transaction_ref_key" ON "mkulima_usage"("transaction_ref");
+CREATE INDEX IF NOT EXISTS "mkulima_usage_transaction_ref_idx" ON "mkulima_usage"("transaction_ref");
 CREATE INDEX IF NOT EXISTS "mkulima_usage_user_id_created_at_idx" ON "mkulima_usage"("user_id", "created_at" DESC);
 CREATE INDEX IF NOT EXISTS "mkulima_usage_created_at_idx" ON "mkulima_usage"("created_at");

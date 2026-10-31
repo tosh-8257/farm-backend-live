@@ -2029,11 +2029,12 @@ model mkulima_usage {
   cost_farm         Decimal  @db.Decimal(30, 8)
   margin_farm       Decimal  @db.Decimal(30, 8)
   charge_farm       Decimal  @db.Decimal(30, 8)
-  transaction_ref   String?  @unique @db.VarChar(255)
+  transaction_ref   String?  @db.VarChar(255)
   status            String   @db.VarChar(20)
   shortfall_farm    Decimal  @default(0) @db.Decimal(30, 8)
   created_at        DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([user_id, created_at(sort: Desc)])
   @@index([created_at])
+  @@index([transaction_ref])
 }

@@ -6,9 +6,9 @@ import {
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
 import { CurrencyConversionService } from '../currency/currency-conversion.service';
-import { generateTxReference } from '../common/utils/reference.util';
 import { ProviderUsage } from './ai-provider';
 
 /** USD prices per 1M tokens for one chat model. */
@@ -134,7 +134,8 @@ export class MkulimaBillingService {
       where: { user_id: userId, is_active: true },
     });
     const bal = Number(w?.balance ?? 0);
-    if (!w || w.is_frozen || bal < Math.max(this.minBalance(), 1e-8))
+    const need = await this.requiredBalance(userId, kind);
+    if (!w || w.is_frozen || !(bal > 0) || bal < need)
       throw new HttpException(
         {
           statusCode: 402,
@@ -143,6 +144,45 @@ export class MkulimaBillingService {
         },
         HttpStatus.PAYMENT_REQUIRED,
       );
+  }
+
+  /**
+   * Balance needed before calling the provider: the larger of the floor
+   * (MKULIMA_MIN_BALANCE_FARM) and the most this user's recent uses of the
+   * same kind have cost, so one use can always be paid in full.
+   */
+  async requiredBalance(userId: string, kind: 'chat' | 'voice') {
+    let recentMax = 0;
+    try {
+      const rows: { charge_farm: unknown }[] = await (
+        this.prisma as any
+      ).mkulima_usage.findMany({
+        where: { user_id: userId, kind },
+        orderBy: { created_at: 'desc' },
+        take: 20,
+        select: { charge_farm: true },
+      });
+      recentMax = Math.max(0, ...rows.map((r) => Number(r.charge_farm ?? 0)));
+    } catch {
+      // No history yet (or table missing): fall back to the floor.
+    }
+    return Math.max(this.minBalance(), recentMax);
+  }
+
+  /** Billing day (YYYYMMDD) in the business time zone (default UTC+3, Nairobi). */
+  dayKey(at = new Date()): string {
+    const off = Number(
+      this.config.get<string>('MKULIMA_BILLING_TZ_OFFSET_MIN') ?? 180,
+    );
+    const d = new Date(
+      at.getTime() + (Number.isFinite(off) ? off : 180) * 60000,
+    );
+    return d.toISOString().slice(0, 10).replace(/-/g, '');
+  }
+
+  /** One daily transaction per user: MKAI-<day>-<user id>. */
+  dailyRef(userId: string, day = this.dayKey()): string {
+    return `MKAI-${day}-${userId.replace(/-/g, '')}`;
   }
 
   private async usdKes(): Promise<{ usdKes: number; farmKes: number }> {
@@ -209,6 +249,7 @@ export class MkulimaBillingService {
         const fee = round8(Math.min(q.margin_farm, paid));
         let ref: string | null = null;
         if (paid > 0 && w && platform) {
+          // Deduct now so the balance is always accurate; never below zero.
           const debit = await tx.wallets.updateMany({
             where: { id: w.id, balance: { gte: paid } },
             data: { balance: { decrement: paid } },
@@ -218,23 +259,34 @@ export class MkulimaBillingService {
             where: { id: platform.id },
             data: { balance: { increment: paid } },
           });
-          ref = generateTxReference();
-          const t = await tx.transactions.create({
-            data: {
+          // Accrue onto today's single 'Mkulima AI' transaction. It stays
+          // pending (not mirrored on chain, not yet in revenue) until the
+          // daily settlement marks it completed.
+          const day = this.dayKey();
+          ref = this.dailyRef(input.userId, day);
+          const t = await tx.transactions.upsert({
+            where: { transaction_reference: ref },
+            create: {
               transaction_reference: ref,
               sender_wallet_id: w.id,
               receiver_wallet_id: platform.id,
               transaction_type: 'mkulima_usage',
-              status: 'completed',
+              status: 'pending',
               amount: paid,
               fee,
               net_amount: round8(paid - fee),
               currency: 'FARM',
               description: 'Mkulima AI',
-              processed_at: new Date(),
-              metadata: { kind: 'mkulima_usage', usage_kind: input.kind },
+              metadata: { kind: 'mkulima_usage', day },
+            },
+            update: {
+              amount: { increment: paid },
+              fee: { increment: fee },
+              net_amount: { increment: round8(paid - fee) },
+              updated_at: new Date(),
             },
           });
+          if (t.status !== 'pending') throw new Error('day already settled');
           await tx.ledger_entries.create({
             data: {
               transaction_id: t.id,
@@ -288,6 +340,31 @@ export class MkulimaBillingService {
       this.log.error(`Mkulima billing failed: ${(e as Error).message}`);
       return null;
     }
+  }
+
+  /** Hourly: complete every pending daily 'Mkulima AI' transaction from a past day. */
+  @Cron('7 * * * *')
+  async settleDaily(now = new Date()) {
+    if (!this.enabled()) return { settled: 0 };
+    const today = this.dayKey(now);
+    const pending: { id: string; transaction_reference: string }[] =
+      await this.prisma.transactions.findMany({
+        where: { transaction_type: 'mkulima_usage' as any, status: 'pending' },
+        select: { id: true, transaction_reference: true },
+        take: 1000,
+      });
+    const due = pending
+      .filter((t) => {
+        const day = /^MKAI-(\d{8})-/.exec(t.transaction_reference)?.[1];
+        return !!day && day < today;
+      })
+      .map((t) => t.id);
+    if (!due.length) return { settled: 0 };
+    const r = await this.prisma.transactions.updateMany({
+      where: { id: { in: due }, status: 'pending' },
+      data: { status: 'completed', processed_at: now, updated_at: now },
+    });
+    return { settled: r.count };
   }
 
   private async platformWallet(tx: any) {
