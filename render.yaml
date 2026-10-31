@@ -113,6 +113,8 @@ services:
         value: "5"
       - key: WITHDRAWAL_DAILY_MAX_AMOUNT
         value: "1000000"
+      - key: CRYPTO_WITHDRAWAL_DAILY_MAX_USD
+        value: "100000"
       - key: DIDIT_API_KEY
         sync: false
       - key: DIDIT_WEBHOOK_SECRET
