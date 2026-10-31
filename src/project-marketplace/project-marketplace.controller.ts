@@ -1,3 +1,4 @@
+import { ProjectFundsService } from './project-funds.service';
 import {
   Body,
   Controller,
@@ -31,6 +32,10 @@ import {
   MilestoneNotesDto,
   MilestonePlanDto,
   MilestoneRequestDto,
+  FundsSettingsDto,
+  ReturnDepositDto,
+  ProjectSpendDto,
+  FundsPauseDto,
 } from './project.dto';
 
 @ApiTags('Marketplace - Projects')
@@ -38,7 +43,17 @@ import {
 @UseGuards(JwtGuard)
 @Controller({ path: 'marketplace', version: '1' })
 export class MarketplaceController {
-  constructor(private readonly svc: MarketplaceService) {}
+  constructor(
+    private readonly svc: MarketplaceService,
+    private readonly funds: ProjectFundsService,
+  ) {}
+
+  @Get('projects/:id/funds-timeline') fundsTimeline(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.funds.investorTimeline(u.id, id);
+  }
 
   @Get('sectors') sectors() {
     return this.svc.sectors();
@@ -98,7 +113,43 @@ export class MarketplaceController {
 @UseGuards(JwtGuard)
 @Controller({ path: 'business/projects', version: '1' })
 export class BusinessProjectsController {
-  constructor(private readonly svc: BusinessProjectsService) {}
+  constructor(
+    private readonly svc: BusinessProjectsService,
+    private readonly funds: ProjectFundsService,
+  ) {}
+
+  @Patch(':id/funds-settings') fundsSettings(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FundsSettingsDto,
+  ) {
+    return this.funds.setSettings(u.id, id, dto);
+  }
+  @Post(':id/returns') depositReturns(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReturnDepositDto,
+  ) {
+    return this.funds.deposit(u.id, id, dto);
+  }
+  @Get(':id/funds-timeline') fundsTimeline(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.funds.ownerTimeline(u.id, id);
+  }
+  @Post(':id/spend')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Pay an invoice or payment link from project funds',
+  })
+  spendFunds(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ProjectSpendDto,
+  ) {
+    return this.funds.spend(u.id, id, dto);
+  }
 
   @Get() list(@CurrentUser() u: any) {
     return this.svc.list(u.id);
@@ -169,7 +220,27 @@ export class BusinessProjectsController {
 @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
 @Controller({ path: 'admin/projects', version: '1' })
 export class AdminProjectsController {
-  constructor(private readonly svc: ProjectReviewService) {}
+  constructor(
+    private readonly svc: ProjectReviewService,
+    private readonly funds: ProjectFundsService,
+  ) {}
+
+  @Patch(':id/funds-pause') fundsPause(
+    @CurrentUser() u: any,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FundsPauseDto,
+  ) {
+    return this.funds.setPaused(u.id, id, dto.paused, dto.reason);
+  }
+  @Get(':id/funds-audit') fundsAudit(@Param('id', ParseUUIDPipe) id: string) {
+    return this.funds.adminAudit(id);
+  }
+  @Post('funds-moves/:moveId/retry') retryMove(
+    @CurrentUser() u: any,
+    @Param('moveId', ParseUUIDPipe) moveId: string,
+  ) {
+    return this.funds.retryMove(u.id, moveId);
+  }
 
   @Get() list(@Query() q: any) {
     return this.svc.list(q);
