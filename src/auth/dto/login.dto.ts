@@ -1,4 +1,7 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { ValidateNested } from 'class-validator';
+import { DeviceProofDto } from '../device-binding/dto/device-proof.dto';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class LoginDto {
@@ -29,4 +32,13 @@ export class LoginDto {
   @IsOptional()
   @IsString()
   turnstile_token?: string;
+
+  @ApiPropertyOptional({
+    type: DeviceProofDto,
+    description: 'Device-binding proof (required when DEVICE_BINDING_ENABLED)',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => DeviceProofDto)
+  device?: DeviceProofDto;
 }

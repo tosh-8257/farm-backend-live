@@ -192,14 +192,14 @@ model farm_token_config {
 }
 
 model fee_configurations {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  transaction_type String?   @db.VarChar(100)
-  flat_fee         Decimal?  @default(0) @db.Decimal(30, 8)
-  percentage_fee   Decimal?  @default(0) @db.Decimal(10, 4)
-  minimum_fee      Decimal?  @default(0) @db.Decimal(30, 8)
-  maximum_fee      Decimal?  @default(0) @db.Decimal(30, 8)
-  is_active        Boolean?  @default(true)
-  created_at       DateTime? @default(now()) @db.Timestamp(6)
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_type      String?   @db.VarChar(100)
+  flat_fee              Decimal?  @default(0) @db.Decimal(30, 8)
+  percentage_fee        Decimal?  @default(0) @db.Decimal(10, 4)
+  minimum_fee           Decimal?  @default(0) @db.Decimal(30, 8)
+  maximum_fee           Decimal?  @default(0) @db.Decimal(30, 8)
+  is_active             Boolean?  @default(true)
+  created_at            DateTime? @default(now()) @db.Timestamp(6)
   label                 String?   @db.VarChar(120)
   description           String?
   payer                 String?   @db.VarChar(20)
@@ -209,54 +209,54 @@ model fee_configurations {
 }
 
 model investment_projects {
-  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  project_name       String               @db.VarChar(255)
-  category           String?              @db.VarChar(100)
-  description        String?
-  banner_image       String?
-  target_amount      Decimal?             @db.Decimal(30, 8)
-  raised_amount      Decimal?             @default(0) @db.Decimal(30, 8)
-  minimum_investment Decimal?             @db.Decimal(30, 8)
-  roi_percent        Decimal?             @db.Decimal(10, 2)
-  duration_months    Int?
-  total_backers      Int?                 @default(0)
-  status             String?              @default("open") @db.VarChar(50)
-  starts_at          DateTime?            @db.Timestamp(6)
-  ends_at            DateTime?            @db.Timestamp(6)
-  created_by         String?              @db.Uuid
-  created_at         DateTime?            @default(now()) @db.Timestamp(6)
-  updated_at         DateTime?            @default(now()) @db.Timestamp(6)
-  users              users?               @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  user_investments   user_investments[]
+  id                     String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_name           String               @db.VarChar(255)
+  category               String?              @db.VarChar(100)
+  description            String?
+  banner_image           String?
+  target_amount          Decimal?             @db.Decimal(30, 8)
+  raised_amount          Decimal?             @default(0) @db.Decimal(30, 8)
+  minimum_investment     Decimal?             @db.Decimal(30, 8)
+  roi_percent            Decimal?             @db.Decimal(10, 2)
+  duration_months        Int?
+  total_backers          Int?                 @default(0)
+  status                 String?              @default("open") @db.VarChar(50)
+  starts_at              DateTime?            @db.Timestamp(6)
+  ends_at                DateTime?            @db.Timestamp(6)
+  created_by             String?              @db.Uuid
+  created_at             DateTime?            @default(now()) @db.Timestamp(6)
+  updated_at             DateTime?            @default(now()) @db.Timestamp(6)
+  users                  users?               @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user_investments       user_investments[]
   // ---- V2 Phase 4: business-submitted projects (canonical project model) ----
-  business_id        String?              @db.Uuid
-  sector             String?              @db.VarChar(40)
-  summary            String?              @db.VarChar(500)
-  location           String?              @db.VarChar(255)
-  country            String?              @db.VarChar(2)
-  currency           String               @default("FARM") @db.VarChar(10)
-  maximum_investment Decimal?             @db.Decimal(30, 8)
-  instrument_type    String?              @db.VarChar(30)
-  use_of_funds       String?
-  risk_factors       String?
-  team               String?
-  review_notes       String?
-  submitted_at       DateTime?            @db.Timestamptz(6)
-  approved_at        DateTime?            @db.Timestamptz(6)
-  listed_at          DateTime?            @db.Timestamptz(6)
-  reviewed_by        String?              @db.Uuid
+  business_id            String?              @db.Uuid
+  sector                 String?              @db.VarChar(40)
+  summary                String?              @db.VarChar(500)
+  location               String?              @db.VarChar(255)
+  country                String?              @db.VarChar(2)
+  currency               String               @default("FARM") @db.VarChar(10)
+  maximum_investment     Decimal?             @db.Decimal(30, 8)
+  instrument_type        String?              @db.VarChar(30)
+  use_of_funds           String?
+  risk_factors           String?
+  team                   String?
+  review_notes           String?
+  submitted_at           DateTime?            @db.Timestamptz(6)
+  approved_at            DateTime?            @db.Timestamptz(6)
+  listed_at              DateTime?            @db.Timestamptz(6)
+  reviewed_by            String?              @db.Uuid
   /// Funds released to the business so far (milestone by milestone)
-  released_amount    Decimal              @default(0) @db.Decimal(30, 8)
-  consolidation_fee    Decimal            @default(0) @db.Decimal(30, 8)
-  consolidation_fee_at DateTime?          @db.Timestamptz(6)
-  consolidation_refunded Decimal          @default(0) @db.Decimal(30, 8)
-  consolidation_released Decimal          @default(0) @db.Decimal(30, 8)
-  milestones         project_milestones[]
-  token              project_tokens?
-  business           businesses?          @relation("business_projects", fields: [business_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  documents          project_documents[]
-  reviews            project_reviews[]
-  updates            project_updates[]
+  released_amount        Decimal              @default(0) @db.Decimal(30, 8)
+  consolidation_fee      Decimal              @default(0) @db.Decimal(30, 8)
+  consolidation_fee_at   DateTime?            @db.Timestamptz(6)
+  consolidation_refunded Decimal              @default(0) @db.Decimal(30, 8)
+  consolidation_released Decimal              @default(0) @db.Decimal(30, 8)
+  milestones             project_milestones[]
+  token                  project_tokens?
+  business               businesses?          @relation("business_projects", fields: [business_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  documents              project_documents[]
+  reviews                project_reviews[]
+  updates                project_updates[]
 
   @@index([business_id])
   @@index([status, sector])
@@ -578,32 +578,37 @@ model email_verification_tokens {
 }
 
 model user_sessions {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id       String?   @db.Uuid
-  refresh_token String
-  jwt_id        String?   @db.VarChar(255)
-  device_name   String?   @db.VarChar(255)
-  device_os     String?   @db.VarChar(100)
-  ip_address    String?   @db.VarChar(100)
-  user_agent    String?
-  is_revoked    Boolean?  @default(false)
-  used_at       DateTime? @db.Timestamp(6)
-  expires_at    DateTime? @db.Timestamp(6)
-  created_at    DateTime? @default(now())
-  users         users?    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String?   @db.Uuid
+  refresh_token     String
+  jwt_id            String?   @db.VarChar(255)
+  device_name       String?   @db.VarChar(255)
+  device_os         String?   @db.VarChar(100)
+  ip_address        String?   @db.VarChar(100)
+  user_agent        String?
+  is_revoked        Boolean?  @default(false)
+  used_at           DateTime? @db.Timestamp(6)
+  expires_at        DateTime? @db.Timestamp(6)
+  created_at        DateTime? @default(now())
+  /// Trusted device this refresh token is bound to (device binding).
+  trusted_device_id String?   @db.Uuid
+  users             users?    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([trusted_device_id])
 }
 
 model pending_login_verifications {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id       String    @db.Uuid
-  phone         String    @db.VarChar(20)
-  role          user_role
-  status        String    @default("pending") @db.VarChar(20)
-  expires_at    DateTime  @db.Timestamp(6)
-  created_at    DateTime  @default(now()) @db.Timestamp(6)
-  verified_at   DateTime? @db.Timestamp(6)
-  attempt_count Int       @default(0)
-  users         users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String    @db.Uuid
+  phone             String    @db.VarChar(20)
+  role              user_role
+  status            String    @default("pending") @db.VarChar(20)
+  expires_at        DateTime  @db.Timestamp(6)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  verified_at       DateTime? @db.Timestamp(6)
+  attempt_count     Int       @default(0)
+  trusted_device_id String?   @db.Uuid
+  users             users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id, status])
   @@index([expires_at])
@@ -675,27 +680,29 @@ model users {
   uploads                                                               uploads[]
   user_investments                                                      user_investments[]
   user_sessions                                                         user_sessions[]
+  trusted_devices                                                       trusted_devices[]
+  device_recoveries                                                     device_recoveries[]
   pending_login_verifications                                           pending_login_verifications[]
   user_settings                                                         user_settings?
   users                                                                 users?                        @relation("usersTousers", fields: [referred_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_users                                                           users[]                       @relation("usersTousers")
   wallets                                                               wallets[]
 
-  transfer_requests_requester     transfer_requests[]      @relation("transfer_requests_requester")
-  transfer_requests_sender        transfer_requests[]      @relation("transfer_requests_sender")
-  payment_requests_requester      payment_requests[]       @relation("payment_requests_requester")
-  payment_requests_recipient      payment_requests[]       @relation("payment_requests_recipient")
+  transfer_requests_requester     transfer_requests[]         @relation("transfer_requests_requester")
+  transfer_requests_sender        transfer_requests[]         @relation("transfer_requests_sender")
+  payment_requests_requester      payment_requests[]          @relation("payment_requests_requester")
+  payment_requests_recipient      payment_requests[]          @relation("payment_requests_recipient")
   biometric_settings              biometric_settings?
-  businesses_owned                businesses[]             @relation("businesses_owner")
-  businesses_reviewed             businesses[]             @relation("businesses_reviewer")
-  business_verifications_reviewed business_verifications[] @relation("business_verifications_reviewer")
-  business_memberships            business_members[]       @relation("business_members_user")
+  businesses_owned                businesses[]                @relation("businesses_owner")
+  businesses_reviewed             businesses[]                @relation("businesses_reviewer")
+  business_verifications_reviewed business_verifications[]    @relation("business_verifications_reviewer")
+  business_memberships            business_members[]          @relation("business_members_user")
+  email_verification_tokens       email_verification_tokens[]
 
   @@index([email], map: "idx_users_email")
   @@index([phone], map: "idx_users_phone")
   @@index([role], map: "idx_users_role")
   @@index([username], map: "idx_users_username")
-  email_verification_tokens email_verification_tokens[]
 }
 
 model wallets {
@@ -1117,57 +1124,57 @@ enum business_person_role {
 }
 
 model businesses {
-  id                   String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  owner_user_id        String                       @unique @db.Uuid
-  merchant_id          String?                      @unique @db.Uuid
-  legal_name           String?                      @db.VarChar(255)
-  trading_name         String?                      @db.VarChar(255)
-  registration_number  String?                      @db.VarChar(255)
-  registration_country String?                      @db.VarChar(100)
-  incorporation_date   DateTime?                    @db.Date
-  business_type        String?                      @db.VarChar(100)
-  sector               String?                      @db.VarChar(100)
-  tax_id               String?                      @db.VarChar(100)
-  country              String?                      @db.VarChar(100)
-  city                 String?                      @db.VarChar(100)
-  address              String?
-  postal_code          String?                      @db.VarChar(30)
-  business_email       String?                      @db.VarChar(255)
-  business_phone       String?                      @db.VarChar(30)
-  website              String?                      @db.VarChar(255)
-  description          String?
-  status               business_status              @default(draft)
-  submitted_at         DateTime?                    @db.Timestamptz(6)
-  reviewed_by          String?                      @db.Uuid
-  reviewed_at          DateTime?                    @db.Timestamptz(6)
-  approved_at          DateTime?                    @db.Timestamptz(6)
-  review_notes         String?
+  id                      String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_user_id           String                       @unique @db.Uuid
+  merchant_id             String?                      @unique @db.Uuid
+  legal_name              String?                      @db.VarChar(255)
+  trading_name            String?                      @db.VarChar(255)
+  registration_number     String?                      @db.VarChar(255)
+  registration_country    String?                      @db.VarChar(100)
+  incorporation_date      DateTime?                    @db.Date
+  business_type           String?                      @db.VarChar(100)
+  sector                  String?                      @db.VarChar(100)
+  tax_id                  String?                      @db.VarChar(100)
+  country                 String?                      @db.VarChar(100)
+  city                    String?                      @db.VarChar(100)
+  address                 String?
+  postal_code             String?                      @db.VarChar(30)
+  business_email          String?                      @db.VarChar(255)
+  business_phone          String?                      @db.VarChar(30)
+  website                 String?                      @db.VarChar(255)
+  description             String?
+  status                  business_status              @default(draft)
+  submitted_at            DateTime?                    @db.Timestamptz(6)
+  reviewed_by             String?                      @db.Uuid
+  reviewed_at             DateTime?                    @db.Timestamptz(6)
+  approved_at             DateTime?                    @db.Timestamptz(6)
+  review_notes            String?
   /// Didit KYB (advisory only; never changes status automatically)
-  didit_kyb_session_id    String?                   @db.VarChar(128)
-  didit_kyb_status        String?                   @db.VarChar(64)
-  didit_kyb_entity_status String?                   @db.VarChar(32)
+  didit_kyb_session_id    String?                      @db.VarChar(128)
+  didit_kyb_status        String?                      @db.VarChar(64)
+  didit_kyb_entity_status String?                      @db.VarChar(32)
   didit_kyb_result        Json?
-  didit_kyb_updated_at    DateTime?                 @db.Timestamptz(6)
-  created_at           DateTime                     @default(now()) @db.Timestamptz(6)
-  updated_at           DateTime                     @default(now()) @updatedAt @db.Timestamptz(6)
-  owner                users                        @relation("businesses_owner", fields: [owner_user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  reviewer             users?                       @relation("businesses_reviewer", fields: [reviewed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  merchant             merchants?                   @relation(fields: [merchant_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  persons              business_persons[]
-  documents            business_documents[]
-  verifications        business_verifications[]
-  members              business_members[]
-  customers            business_customers[]
-  invoices             business_invoices[]
-  payment_links        business_payment_links[]
-  payments             business_payments[]
-  escrows              business_escrows[]
-  api_keys             api_keys[]                   @relation("api_keys_business")
-  webhook_endpoints    business_webhook_endpoints[]
-  api_requests         business_api_requests[]
-  sandbox_objects      business_sandbox_objects[]
-  projects             investment_projects[]        @relation("business_projects")
-  web_checkouts        business_web_checkouts[]
+  didit_kyb_updated_at    DateTime?                    @db.Timestamptz(6)
+  created_at              DateTime                     @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                     @default(now()) @updatedAt @db.Timestamptz(6)
+  owner                   users                        @relation("businesses_owner", fields: [owner_user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  reviewer                users?                       @relation("businesses_reviewer", fields: [reviewed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  merchant                merchants?                   @relation(fields: [merchant_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  persons                 business_persons[]
+  documents               business_documents[]
+  verifications           business_verifications[]
+  members                 business_members[]
+  customers               business_customers[]
+  invoices                business_invoices[]
+  payment_links           business_payment_links[]
+  payments                business_payments[]
+  escrows                 business_escrows[]
+  api_keys                api_keys[]                   @relation("api_keys_business")
+  webhook_endpoints       business_webhook_endpoints[]
+  api_requests            business_api_requests[]
+  sandbox_objects         business_sandbox_objects[]
+  projects                investment_projects[]        @relation("business_projects")
+  web_checkouts           business_web_checkouts[]
 
   @@index([status], map: "idx_businesses_status")
   @@index([didit_kyb_session_id], map: "idx_businesses_didit_kyb_session")
@@ -1783,17 +1790,17 @@ model ai_messages {
 }
 
 model ai_spend_permissions {
-  id              String    @id @default(uuid()) @db.Uuid
-  user_id         String    @unique @db.Uuid
-  enabled         Boolean   @default(false)
-  per_tx_cap      Decimal   @default(0) @db.Decimal(20, 2)
-  daily_cap       Decimal   @default(0) @db.Decimal(20, 2)
-  allowed_actions String[]  @default([])
+  id               String    @id @default(uuid()) @db.Uuid
+  user_id          String    @unique @db.Uuid
+  enabled          Boolean   @default(false)
+  per_tx_cap       Decimal   @default(0) @db.Decimal(20, 2)
+  daily_cap        Decimal   @default(0) @db.Decimal(20, 2)
+  allowed_actions  String[]  @default([])
   /// Gap fix: spending categories the user allows Mkulima to pay in (all on by default).
-  spend_categories String[] @default(["Hotels", "Flights", "Transport", "Shopping", "Bills", "Services", "Investments", "Crypto"])
-  revoked_at      DateTime?
-  created_at      DateTime  @default(now())
-  updated_at      DateTime  @updatedAt
+  spend_categories String[]  @default(["Hotels", "Flights", "Transport", "Shopping", "Bills", "Services", "Investments", "Crypto"])
+  revoked_at       DateTime?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
 }
 
 model ai_action_requests {
@@ -1827,29 +1834,29 @@ model ai_audit_log {
 
 // ---- Phase 8: Travel (additive) ----
 model travel_bookings {
-  id                  String    @id @default(uuid()) @db.Uuid
-  user_id             String    @db.Uuid
-  idempotency_key     String
-  kind                String    @default("flight")
-  provider            String
-  provider_offer_id   String
-  provider_order_id   String?
-  booking_reference   String?
-  status              String    @default("pending")
-  offer_currency      String
-  offer_amount        Decimal   @db.Decimal(20, 2)
-  fx_rate             Decimal?  @db.Decimal(20, 6)
-  service_fee_farm    Decimal   @default(0) @db.Decimal(20, 2)
-  total_farm          Decimal   @db.Decimal(20, 2)
-  transaction_id      String?   @db.Uuid
-  refund_transaction_id String? @db.Uuid
-  ai_action_id        String?   @db.Uuid
-  summary             Json?
-  passengers          Json?
-  failure_reason      String?
-  live_mode           Boolean   @default(false)
-  created_at          DateTime  @default(now())
-  updated_at          DateTime  @updatedAt
+  id                    String   @id @default(uuid()) @db.Uuid
+  user_id               String   @db.Uuid
+  idempotency_key       String
+  kind                  String   @default("flight")
+  provider              String
+  provider_offer_id     String
+  provider_order_id     String?
+  booking_reference     String?
+  status                String   @default("pending")
+  offer_currency        String
+  offer_amount          Decimal  @db.Decimal(20, 2)
+  fx_rate               Decimal? @db.Decimal(20, 6)
+  service_fee_farm      Decimal  @default(0) @db.Decimal(20, 2)
+  total_farm            Decimal  @db.Decimal(20, 2)
+  transaction_id        String?  @db.Uuid
+  refund_transaction_id String?  @db.Uuid
+  ai_action_id          String?  @db.Uuid
+  summary               Json?
+  passengers            Json?
+  failure_reason        String?
+  live_mode             Boolean  @default(false)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
 
   @@unique([user_id, idempotency_key])
   @@index([user_id, created_at])
@@ -1884,17 +1891,17 @@ model payment_intents {
 
 /// Phase 9: refunds of succeeded payment intents (business wallet → payer wallet).
 model payment_refunds {
-  id                    String   @id @default(uuid()) @db.Uuid
-  intent_id             String   @db.Uuid
-  business_id           String   @db.Uuid
-  created_by            String?  @db.Uuid
-  live_mode             Boolean  @default(true)
-  amount                Decimal  @db.Decimal(30, 8)
-  reason                String?  @db.VarChar(255)
-  status                String   @default("succeeded") @db.VarChar(20)
-  transaction_id        String?  @db.Uuid
-  idempotency_key       String?  @db.VarChar(255)
-  created_at            DateTime @default(now())
+  id              String   @id @default(uuid()) @db.Uuid
+  intent_id       String   @db.Uuid
+  business_id     String   @db.Uuid
+  created_by      String?  @db.Uuid
+  live_mode       Boolean  @default(true)
+  amount          Decimal  @db.Decimal(30, 8)
+  reason          String?  @db.VarChar(255)
+  status          String   @default("succeeded") @db.VarChar(20)
+  transaction_id  String?  @db.Uuid
+  idempotency_key String?  @db.VarChar(255)
+  created_at      DateTime @default(now())
 
   @@unique([business_id, idempotency_key])
   @@index([intent_id])
@@ -1902,18 +1909,18 @@ model payment_refunds {
 
 /// Phase 9: a user's mandate letting a business's agent request payments within limits (SpendingLimit).
 model agent_authorizations {
-  id           String    @id @default(uuid()) @db.Uuid
-  user_id      String    @db.Uuid
-  business_id  String    @db.Uuid
-  label        String?   @db.VarChar(100)
-  per_tx_cap   Decimal   @db.Decimal(30, 8)
-  daily_cap    Decimal   @db.Decimal(30, 8)
-  monthly_cap  Decimal   @db.Decimal(30, 8)
-  status       String    @default("active") @db.VarChar(20)
-  expires_at   DateTime
-  revoked_at   DateTime?
-  created_at   DateTime  @default(now())
-  updated_at   DateTime  @updatedAt
+  id          String    @id @default(uuid()) @db.Uuid
+  user_id     String    @db.Uuid
+  business_id String    @db.Uuid
+  label       String?   @db.VarChar(100)
+  per_tx_cap  Decimal   @db.Decimal(30, 8)
+  daily_cap   Decimal   @db.Decimal(30, 8)
+  monthly_cap Decimal   @db.Decimal(30, 8)
+  status      String    @default("active") @db.VarChar(20)
+  expires_at  DateTime
+  revoked_at  DateTime?
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
 
   @@index([user_id, status])
   @@index([business_id, status])
@@ -1944,23 +1951,23 @@ model agent_payment_requests {
 
 /// A business's paid HTTP endpoint behind the FARM x402 gateway.
 model x402_resources {
-  id           String    @id @db.Uuid
-  business_id  String    @db.Uuid
-  created_by   String    @db.Uuid
-  name         String    @db.VarChar(100)
-  description  String?   @db.VarChar(255)
-  method       String    @default("GET") @db.VarChar(10)
-  upstream_url String    @db.VarChar(2048)
-  mime_type    String?   @db.VarChar(100)
-  asset        String    @db.VarChar(10)
+  id           String   @id @db.Uuid
+  business_id  String   @db.Uuid
+  created_by   String   @db.Uuid
+  name         String   @db.VarChar(100)
+  description  String?  @db.VarChar(255)
+  method       String   @default("GET") @db.VarChar(10)
+  upstream_url String   @db.VarChar(2048)
+  mime_type    String?  @db.VarChar(100)
+  asset        String   @db.VarChar(10)
   price_units  BigInt
-  pay_to       String    @db.VarChar(64)
-  status       String    @default("active") @db.VarChar(20)
+  pay_to       String   @db.VarChar(64)
+  status       String   @default("active") @db.VarChar(20)
   enc_secret   String
-  enc_iv       String    @db.VarChar(32)
-  enc_tag      String    @db.VarChar(32)
-  created_at   DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  enc_iv       String   @db.VarChar(32)
+  enc_tag      String   @db.VarChar(32)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([business_id])
 }
@@ -2006,4 +2013,72 @@ model nfc_payment_requests {
   created_at            DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([payee_user_id, created_at(sort: Desc)], map: "idx_nfc_req_payee")
+}
+
+/// Device binding: a device keypair registered to a user. status is
+/// trusted | pending | rejected | revoked.
+model trusted_devices {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id               String    @db.Uuid
+  device_id             String    @db.VarChar(128)
+  public_key            String
+  key_alg               String    @db.VarChar(16)
+  platform              String?   @db.VarChar(20)
+  name                  String?   @db.VarChar(100)
+  status                String    @default("pending") @db.VarChar(20)
+  approved_at           DateTime? @db.Timestamp(6)
+  approved_by_device_id String?   @db.Uuid
+  created_at            DateTime  @default(now()) @db.Timestamp(6)
+  last_seen_at          DateTime? @db.Timestamp(6)
+  revoked_at            DateTime? @db.Timestamp(6)
+  users                 users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, device_id])
+  @@index([user_id, status])
+}
+
+/// Single-use server nonces a device signs during login.
+model device_login_challenges {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  device_id  String    @db.VarChar(128)
+  nonce      String    @db.VarChar(128)
+  ip_address String?   @db.VarChar(100)
+  expires_at DateTime  @db.Timestamp(6)
+  used_at    DateTime? @db.Timestamp(6)
+  created_at DateTime  @default(now()) @db.Timestamp(6)
+
+  @@index([device_id, created_at])
+  @@index([expires_at])
+}
+
+/// New-device recovery: SMS OTP + Didit ID check, then old devices revoked.
+model device_recoveries {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id           String    @db.Uuid
+  trusted_device_id String    @db.Uuid
+  otp_hash          String
+  otp_attempts      Int       @default(0)
+  status            String    @default("otp_sent") @db.VarChar(20)
+  didit_session_id  String?   @db.VarChar(128)
+  didit_status      String?   @db.VarChar(40)
+  expires_at        DateTime  @db.Timestamp(6)
+  completed_at      DateTime? @db.Timestamp(6)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  /// Owner-match outcome: reason codes when routed to manual review.
+  review_reason     String?   @db.VarChar(500)
+  face_match_score  Float?
+  reviewed_by       String?   @db.Uuid
+  reviewed_at       DateTime? @db.Timestamp(6)
+  users             users     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, status])
+  @@index([status, created_at])
+}
+
+/// The user's first approved Didit KYC session: the identity reference that
+/// device recovery must match (face + document number + name).
+model kyc_identity_references {
+  user_id          String   @id @db.Uuid
+  didit_session_id String   @db.VarChar(128)
+  created_at       DateTime @default(now()) @db.Timestamp(6)
 }
