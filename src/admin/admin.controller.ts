@@ -460,6 +460,13 @@ export class AdminController {
   updateCurrencyRate(@Body() dto: CurrencyRateDto, @CurrentUser() u: any) {
     return this.svc.updateCurrencyRate(dto.usd_kes_rate, u.id);
   }
+  @Permissions('admin:write')
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN)
+  @Delete('currency-rates/override')
+  clearCurrencyRateOverride() {
+    return this.svc.clearCurrencyRateOverride();
+  }
   @Permissions('admin:read')
   @Get('audit-logs')
   auditLogs(@Query() q: any) {
