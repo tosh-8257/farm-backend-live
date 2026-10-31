@@ -508,8 +508,15 @@ export class ChainWalletService {
    * also top up positive differences from the issuer reserve. Never debits the
    * ledger; the internal ledger stays the source of truth.
    */
-  async reconcile(adminId: string, mode: 'dry' | 'execute', limit = 100) {
+  async reconcile(
+    adminId: string,
+    mode: 'dry' | 'execute',
+    limit = 100,
+    address?: string,
+  ) {
     const c = chainConfig();
+    if (address !== undefined && !/^[A-Z2-7]{58}$/.test(address))
+      throw new BadRequestException('Invalid Algorand address');
     if (!c.wallets.enabled)
       throw new ServiceUnavailableException('Chain wallets are disabled');
     if (mode === 'execute' && !c.mirror.enabled)
@@ -528,7 +535,11 @@ export class ChainWalletService {
         );
     }
     const ws = await this.prisma.user_chain_wallets.findMany({
-      where: { status: 'ready', network: c.network },
+      where: {
+        status: 'ready',
+        network: c.network,
+        ...(address ? { address } : {}),
+      },
       take: Math.min(Math.max(limit, 1), 500),
       orderBy: { created_at: 'asc' },
     });
