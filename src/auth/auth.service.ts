@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Optional,
   BadRequestException,
   UnauthorizedException,
   ConflictException,
@@ -19,6 +20,8 @@ import * as bcrypt from 'bcrypt';
 import * as admin from 'firebase-admin';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../database/prisma.service';
+import { DeviceBindingService } from './device-binding/device-binding.service';
+import type { DeviceProofDto } from './device-binding/dto/device-proof.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FirebaseService } from '../notifications/firebase.service';
 import { TurnstileService } from '../common/services/turnstile.service';
@@ -88,7 +91,19 @@ export class AuthService implements OnModuleInit {
     private turnstile: TurnstileService,
     private firebase: FirebaseService,
     private readonly redis: RedisService,
+    @Optional() private readonly deviceBinding?: DeviceBindingService,
   ) {}
+
+  /** Device-binding gate; a no-op when DEVICE_BINDING_ENABLED is not true. */
+  private async gateDevice(userId: string, device: unknown, ip: string) {
+    if (!this.deviceBinding) return null;
+    const result = await this.deviceBinding.evaluateLogin(
+      userId,
+      device as DeviceProofDto | undefined,
+      ip,
+    );
+    return result.trustedDeviceId;
+  }
 
   private otpSecret(): string {
     return (
@@ -440,6 +455,12 @@ export class AuthService implements OnModuleInit {
       },
     });
 
+    const trustedDeviceId = await this.gateDevice(
+      user.id,
+      (dto as { device?: unknown }).device,
+      ip,
+    );
+
     const userRole = (user.role ?? 'user').toString().toLowerCase();
 
     const requirePhoneVerification =
@@ -457,6 +478,7 @@ export class AuthService implements OnModuleInit {
       const rounds = Number(this.cfg.get('BCRYPT_ROUNDS')) || 12;
       await this.prisma.user_sessions.create({
         data: {
+          trusted_device_id: trustedDeviceId,
           user_id: user.id,
           refresh_token: await bcrypt.hash(tokens.refresh_token, rounds),
           jwt_id: tokens.jti,
@@ -499,6 +521,7 @@ export class AuthService implements OnModuleInit {
 
     const pending = await this.prisma.pending_login_verifications.create({
       data: {
+        trusted_device_id: trustedDeviceId,
         user_id: user.id,
         phone: this.normalizePhoneNumber(user.phone),
         role: user.role ?? 'user',
@@ -544,6 +567,7 @@ export class AuthService implements OnModuleInit {
       country_code?: string;
       cf_turnstile_response?: string;
       turnstile_token?: string;
+      device?: unknown;
     },
     ip: string,
     userAgent: string,
@@ -592,6 +616,12 @@ export class AuthService implements OnModuleInit {
       },
     });
 
+    const trustedDeviceId = await this.gateDevice(
+      user.id,
+      (dto as { device?: unknown }).device,
+      ip,
+    );
+
     const userRole = (user.role ?? 'user').toString().toLowerCase();
     if (userRole === 'admin' || userRole === 'super_admin') {
       const tokens = await this.issueTokens(
@@ -602,6 +632,7 @@ export class AuthService implements OnModuleInit {
       const rounds = Number(this.cfg.get('BCRYPT_ROUNDS')) || 12;
       await this.prisma.user_sessions.create({
         data: {
+          trusted_device_id: trustedDeviceId,
           user_id: user.id,
           refresh_token: await bcrypt.hash(tokens.refresh_token, rounds),
           jwt_id: tokens.jti,
@@ -615,6 +646,7 @@ export class AuthService implements OnModuleInit {
 
     const pending = await this.prisma.pending_login_verifications.create({
       data: {
+        trusted_device_id: trustedDeviceId,
         user_id: user.id,
         phone: this.normalizePhoneNumber(user.phone),
         role: user.role ?? 'user',
@@ -779,6 +811,7 @@ export class AuthService implements OnModuleInit {
     const rounds = Number(this.cfg.get('BCRYPT_ROUNDS')) || 12;
     await this.prisma.user_sessions.create({
       data: {
+        trusted_device_id: pending.trusted_device_id ?? null,
         user_id: user.id,
         refresh_token: await bcrypt.hash(tokens.refresh_token, rounds),
         jwt_id: tokens.jti,
@@ -1447,7 +1480,12 @@ export class AuthService implements OnModuleInit {
   // ── Refresh ──────────────────────────────────────────────────────────────────
   private static readonly REFRESH_RACE_GRACE_MS = 30_000;
 
-  async refresh(userId: string, rawRefreshToken: string, ip?: string) {
+  async refresh(
+    userId: string,
+    rawRefreshToken: string,
+    ip?: string,
+    deviceId?: string,
+  ) {
     // Match the presented token to its own active session. This prevents a
     // refresh on one device from consuming another device's session.
     const sessions = (await this.prisma.user_sessions.findMany({
@@ -1484,6 +1522,27 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check if this refresh token has already been used (token reuse detection)
+    if (
+      this.deviceBinding &&
+      !(await this.deviceBinding.isSessionDeviceValid(
+        session.trusted_device_id,
+        deviceId,
+      ))
+    ) {
+      await this.prisma.user_sessions.update({
+        where: { id: session.id },
+        data: { is_revoked: true },
+      });
+      await this.logSecurityEvent(
+        userId,
+        'REFRESH_DEVICE_MISMATCH',
+        'Device-bound refresh token used without its trusted device',
+        'high',
+        ip,
+      );
+      throw new UnauthorizedException('Session not valid on this device');
+    }
+
     if (session.used_at) {
       // Token has been used before - possible theft!
       await this.handleTokenTheft(userId, session, ip);
@@ -1553,6 +1612,7 @@ export class AuthService implements OnModuleInit {
     // Create new session with rotated refresh token
     await this.prisma.user_sessions.create({
       data: {
+        trusted_device_id: session.trusted_device_id ?? null,
         user_id: userId,
         refresh_token: await bcrypt.hash(tokens.refresh_token, rounds),
         jwt_id: tokens.jti, // Store the new JWT ID

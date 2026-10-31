@@ -9,6 +9,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { TurnstileService } from '../common/services/turnstile.service';
 import { TurnstileGuard } from '../common/guards/turnstile.guard';
 import { requireJwtAccessSecret } from './jwt-secret';
+import { DeviceBindingModule } from './device-binding/device-binding.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { requireJwtAccessSecret } from './jwt-secret';
       }),
     }),
     NotificationsModule,
+    DeviceBindingModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy, TurnstileService, TurnstileGuard],

@@ -6,5 +6,6 @@ import { DiditService } from './didit.service';
 @Module({
   controllers: [DiditSessionController, DiditWebhookController],
   providers: [DiditService],
+  exports: [DiditService],
 })
 export class DiditModule {}

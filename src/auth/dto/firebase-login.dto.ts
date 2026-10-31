@@ -1,3 +1,6 @@
+import { Type } from 'class-transformer';
+import { ValidateNested } from 'class-validator';
+import { DeviceProofDto } from '../device-binding/dto/device-proof.dto';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsString } from 'class-validator';
 
@@ -37,4 +40,13 @@ export class FirebaseLoginDto {
   @IsOptional()
   @IsString()
   turnstile_token?: string;
+
+  @ApiPropertyOptional({
+    type: DeviceProofDto,
+    description: 'Device-binding proof (required when DEVICE_BINDING_ENABLED)',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => DeviceProofDto)
+  device?: DeviceProofDto;
 }

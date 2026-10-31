@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 
+export const DEVICE_RECOVERY_VENDOR_PREFIX = 'devrec:';
 const WORKFLOW_ID = '9d75ebb3-2dbe-410e-9062-5c84c41af087';
 const DIDIT_SESSION_URL = 'https://verification.didit.me/v3/session/';
 const UUID_PATTERN =
@@ -171,6 +172,61 @@ export class DiditService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
   ) {}
+
+  /**
+   * Didit session for new-device recovery. vendor_data is
+   * devrec:<device_recoveries.id>; the webhook records the decision on that
+   * row only and never changes users.kyc_status.
+   */
+  async createDeviceRecoverySession(vendorData: string) {
+    if (!vendorData.startsWith(DEVICE_RECOVERY_VENDOR_PREFIX)) {
+      throw new BadGatewayException('Invalid recovery session');
+    }
+    const apiKey = this.config.get<string>('DIDIT_API_KEY')?.trim();
+    if (!apiKey) {
+      throw new BadGatewayException('Didit session creation is not configured');
+    }
+    const workflow =
+      this.config.get<string>('DIDIT_DEVICE_RECOVERY_WORKFLOW_ID')?.trim() ||
+      WORKFLOW_ID;
+    return this.requestSession(apiKey, workflow, vendorData, 'KYC');
+  }
+
+  private async processDeviceRecoveryWebhook(
+    eventId: string,
+    recoveryId: string,
+    flat: Record<string, unknown>,
+  ): Promise<void> {
+    const status = typeof flat.status === 'string' ? flat.status : null;
+    try {
+      await this.prisma.$transaction(async (transaction) => {
+        await transaction.didit_webhook_events.create({
+          data: {
+            event_id: eventId,
+            webhook_type:
+              typeof flat.webhook_type === 'string' ? flat.webhook_type : null,
+            session_id:
+              typeof flat.session_id === 'string' ? flat.session_id : null,
+            status,
+          },
+        });
+        if (!status || !UUID_PATTERN.test(recoveryId)) return;
+        await transaction.device_recoveries.updateMany({
+          where: {
+            id: recoveryId,
+            status: 'otp_verified',
+            ...(typeof flat.session_id === 'string'
+              ? { didit_session_id: flat.session_id }
+              : {}),
+          },
+          data: { didit_status: status.slice(0, 40) },
+        });
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) return;
+      throw error;
+    }
+  }
 
   async createSession(userId: string) {
     // Any previous status (none, rejected via the old manual flow, declined,
@@ -433,6 +489,17 @@ export class DiditService {
     const status = flat.status;
     const kycStatus = kycStatusForDiditStatus(status);
     const vendorData = flat.vendor_data;
+
+    if (
+      typeof vendorData === 'string' &&
+      vendorData.startsWith(DEVICE_RECOVERY_VENDOR_PREFIX)
+    ) {
+      return this.processDeviceRecoveryWebhook(
+        eventId,
+        vendorData.slice(DEVICE_RECOVERY_VENDOR_PREFIX.length),
+        flat,
+      );
+    }
 
     try {
       await this.prisma.$transaction(

@@ -470,6 +470,7 @@ export class AuthController {
       decoded.sub,
       dto.refresh_token,
       req.ip || '',
+      dto.device_id,
     );
   }
 
