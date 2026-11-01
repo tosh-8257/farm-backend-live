@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { AuthModule } from '../auth.module';
 import { NotificationsModule } from '../../notifications/notifications.module';
 import { DiditModule } from '../../didit/didit.module';
 import { DeviceBindingService } from './device-binding.service';
@@ -9,7 +10,9 @@ import {
 } from './device-binding.controller';
 
 @Module({
-  imports: [NotificationsModule, DiditModule],
+  // RolesGuard on the admin controllers needs JwtService (exported by AuthModule,
+  // which imports this module, hence forwardRef).
+  imports: [NotificationsModule, DiditModule, forwardRef(() => AuthModule)],
   controllers: [
     DeviceBindingController,
     DeviceAdminController,
