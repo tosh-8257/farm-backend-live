@@ -12,6 +12,7 @@ afterEach(() => {
 });
 const on = (auto = false) => {
   process.env.PROJECT_FUNDS_FLOW_ENABLED = 'true';
+  process.env.ALGORAND_NETWORK = 'testnet';
   if (auto) process.env.PROJECT_AUTO_PAYOUTS_ENABLED = 'true';
 };
 
