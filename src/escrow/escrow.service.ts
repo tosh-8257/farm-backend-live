@@ -99,6 +99,8 @@ export class EscrowService {
       biometric_auth?: boolean;
       device_fingerprint?: string;
     },
+    /** Internal only (never from request bodies): settle to a business wallet. */
+    opts?: { sellerWalletId?: string },
   ) {
     if (!Number.isFinite(dto.amount) || dto.amount <= 0) {
       throw new BadRequestException('Amount must be a positive number');
@@ -215,7 +217,7 @@ export class EscrowService {
           buyer_id: buyerId,
           seller_id: seller.id,
           buyer_wallet_id: buyer.wallets[0].id,
-          seller_wallet_id: seller.wallets[0].id,
+          seller_wallet_id: opts?.sellerWalletId ?? seller.wallets[0].id,
           amount: dto.amount,
           fee,
           title,

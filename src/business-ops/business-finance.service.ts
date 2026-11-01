@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +10,13 @@ import { AuthService } from '../auth/auth.service';
 import { paginate, paginationParams } from '../common/utils/pagination.util';
 import { BusinessAccessService } from './business-access.service';
 import { BusinessWebhooksService } from './business-webhooks.service';
+import {
+  businessWalletEnabled,
+  personalWalletOf,
+  settlementWalletFor,
+} from './business-wallet';
+import { generateTxReference } from '../common/utils/reference.util';
+import { chainConfig } from '../chain-wallet/chain-config';
 
 /** UI status -> stored transaction_status. */
 export const TX_STATUS_MAP: Record<string, string> = {
@@ -46,11 +54,12 @@ export class BusinessFinanceService {
     private readonly webhooks: BusinessWebhooksService,
   ) {}
 
-  /** The business wallet is the owner's active wallet (the merchant settlement wallet). */
+  /**
+   * The business settlement wallet. With BUSINESS_WALLET_ENABLED it is the
+   * business's own merchant wallet; otherwise (legacy) the owner's personal wallet.
+   */
   async walletFor(ownerUserId: string) {
-    const w = await this.prisma.wallets.findFirst({
-      where: { user_id: ownerUserId, is_active: true },
-    });
+    const w = await settlementWalletFor(this.prisma, { ownerUserId });
     if (!w) throw new NotFoundException('Business wallet not found');
     return w;
   }
@@ -70,8 +79,135 @@ export class BusinessFinanceService {
           Number(w.balance) - Number(w.locked_balance),
         ),
         is_frozen: w.is_frozen,
+        kind: w.wallet_type === 'merchant' ? 'business' : 'personal',
+        separate_from_personal: w.wallet_type === 'merchant',
+        // The business's own custodial Algorand account (receive address).
+        chain_account:
+          w.wallet_type === 'merchant' ? await this.chainAccount(w.id) : null,
+        can_move_to_personal:
+          businessWalletEnabled() &&
+          w.wallet_type === 'merchant' &&
+          a.role === 'owner',
       },
     };
+  }
+
+  private async chainAccount(walletId: string) {
+    if (!chainConfig().wallets.enabled) return null;
+    const c = await this.prisma.business_chain_wallets.findUnique({
+      where: { wallet_id: walletId },
+      select: { address: true, network: true, status: true },
+    });
+    return c
+      ? {
+          address: c.address,
+          network: c.network,
+          status: c.status,
+          ready: c.status === 'ready',
+          farm_asa_id: process.env.FARM_ASA_ID ?? null,
+        }
+      : null;
+  }
+
+  /**
+   * Owner-only, free internal move from the business wallet to the owner's
+   * personal wallet (BUSINESS_WALLET_ENABLED). One DB transaction, PIN required.
+   */
+  async moveToPersonal(
+    userId: string,
+    dto: { amount: number; pin?: string; note?: string },
+  ) {
+    if (!businessWalletEnabled())
+      throw new BadRequestException(
+        'The business wallet is not switched on yet',
+      );
+    const a = await this.access.resolve(userId, 'wallet:read');
+    if (a.role !== 'owner')
+      throw new ForbiddenException(
+        'Only the business owner can move funds to personal',
+      );
+    const amount = Number(dto.amount);
+    if (!(amount > 0) || Math.round(amount * 100) / 100 !== amount)
+      throw new BadRequestException('Amount must be positive (2 decimals)');
+    if (!dto.pin) throw new BadRequestException('Transaction PIN is required');
+    await this.auth.verifyPin(userId, dto.pin);
+    const biz = await this.walletFor(a.business.owner_user_id);
+    if (biz.wallet_type !== 'merchant')
+      throw new BadRequestException('This business has no separate wallet yet');
+    if (biz.is_frozen)
+      throw new ForbiddenException('Business wallet is frozen');
+    return this.prisma.$transaction(async (tx) => {
+      const me = await personalWalletOf(tx, userId);
+      if (!me || me.id === biz.id)
+        throw new NotFoundException('Personal wallet not found');
+      const took = await tx.wallets.updateMany({
+        where: { id: biz.id, is_frozen: false },
+        data: { balance: { decrement: amount } },
+      });
+      const after = await tx.wallets.findUnique({ where: { id: biz.id } });
+      if (
+        !took.count ||
+        Number(after!.balance) - Number(after!.locked_balance) < 0
+      )
+        throw new BadRequestException('Not enough available business balance');
+      const credited = await tx.wallets.update({
+        where: { id: me.id },
+        data: { balance: { increment: amount } },
+      });
+      const ref = generateTxReference();
+      const t = await tx.transactions.create({
+        data: {
+          transaction_reference: ref,
+          sender_wallet_id: biz.id,
+          receiver_wallet_id: me.id,
+          transaction_type: 'transfer',
+          status: 'completed',
+          amount,
+          fee: 0,
+          net_amount: amount,
+          description:
+            dto.note?.slice(0, 200) || 'Moved from business to personal',
+          metadata: {
+            kind: 'business_to_personal',
+            business_id: a.business.id,
+          },
+          processed_at: new Date(),
+        },
+      });
+      await tx.ledger_entries.createMany({
+        data: [
+          {
+            transaction_id: t.id,
+            wallet_id: biz.id,
+            entry_type: 'debit',
+            amount,
+            balance_before: Number(after!.balance) + amount,
+            balance_after: Number(after!.balance),
+            description: 'Move to personal',
+            category: 'business_to_personal',
+          },
+          {
+            transaction_id: t.id,
+            wallet_id: me.id,
+            entry_type: 'credit',
+            amount,
+            balance_before: Number(credited.balance) - amount,
+            balance_after: Number(credited.balance),
+            description: 'From your business wallet',
+            category: 'business_to_personal',
+          },
+        ],
+      });
+      return {
+        data: {
+          transaction_reference: ref,
+          amount,
+          fee: 0,
+          business_balance: Number(after!.balance),
+          personal_balance: Number(credited.balance),
+        },
+      };
+    });
   }
 
   async dashboard(userId: string) {
@@ -155,6 +291,7 @@ export class BusinessFinanceService {
                 Number(w.balance) - Number(w.locked_balance),
               ),
               currency: w.currency,
+              kind: w.wallet_type === 'merchant' ? 'business' : 'personal',
             }
           : null,
         last_30_days: showMoney

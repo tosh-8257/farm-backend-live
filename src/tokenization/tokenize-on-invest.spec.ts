@@ -91,6 +91,7 @@ function svcMocks(o: any = {}) {
               status: 'requested',
               asset_name: 'Solar',
               unit_name: 'SOLAR',
+              accept_buyback_commitment: true,
               network: 'testnet',
               unit_price: 1,
               total_units: 0n,
@@ -121,7 +122,12 @@ function svcMocks(o: any = {}) {
 }
 
 describe('business request (on_invest)', () => {
-  const dto = { asset_name: 'Solar', unit_name: 'solar', mode: 'on_invest' };
+  const dto = {
+    asset_name: 'Solar',
+    unit_name: 'solar',
+    accept_buyback_commitment: true,
+    mode: 'on_invest',
+  };
   it('refused when the flag is off', async () => {
     delete process.env.TOKENIZE_ON_INVEST_ENABLED;
     await expect(svcMocks().svc.request('u', PID, dto)).rejects.toThrow(
@@ -142,7 +148,11 @@ describe('business request (on_invest)', () => {
   });
   it('legacy post-funding path unchanged', async () => {
     await expect(
-      svcMocks().svc.request('u', PID, { asset_name: 'S', unit_name: 'S' }),
+      svcMocks().svc.request('u', PID, {
+        asset_name: 'S',
+        unit_name: 'S',
+        accept_buyback_commitment: true,
+      }),
     ).rejects.toThrow('Only funded or closed');
   });
 });
@@ -258,6 +268,7 @@ function deliveryMocks(o: any = {}) {
       updateMany: jest.fn().mockResolvedValue({ count: o.claim ?? 1 }),
       aggregate: jest.fn().mockResolvedValue({ _sum: { units: o.sold ?? 0n } }),
     },
+    token_buybacks: { count: jest.fn().mockResolvedValue(0) },
     user_chain_wallets: {
       findUnique: jest
         .fn()

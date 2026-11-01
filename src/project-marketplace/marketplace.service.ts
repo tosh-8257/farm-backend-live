@@ -195,7 +195,8 @@ export class MarketplaceService {
           consolidation_reserve:
             Number(p.consolidation_fee ?? 0) -
             Number(p.consolidation_refunded ?? 0) -
-            Number(p.consolidation_released ?? 0),
+            Number(p.consolidation_released ?? 0) -
+            Number(p.consolidation_bought_back ?? 0),
           milestones: p.milestones.map((m) => ({
             ...m,
             amount: Number(m.amount),

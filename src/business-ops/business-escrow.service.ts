@@ -37,6 +37,8 @@ export function milestonesOf(e: { milestones?: any }): Milestone[] {
   }));
 }
 
+import { businessWalletEnabled, settlementWalletFor } from './business-wallet';
+
 @Injectable()
 export class BusinessEscrowService {
   constructor(
@@ -278,13 +280,23 @@ export class BusinessEscrowService {
     if (!claimed.count)
       throw new BadRequestException('Escrow is no longer awaiting payment');
     try {
-      const res: any = await this.escrow.create(buyerId, {
+      // BUSINESS_WALLET_ENABLED: releases settle into the business wallet.
+      const sellerWallet = businessWalletEnabled()
+        ? await settlementWalletFor(this.prisma, { businessId: e.business_id })
+        : null;
+      const dtoIn = {
         seller_identifier: seller,
         amount: Number(e.amount),
         title: e.title,
         description: e.description ?? undefined,
         pin,
-      });
+      };
+      const res: any =
+        sellerWallet?.wallet_type === 'merchant'
+          ? await this.escrow.create(buyerId, dtoIn, {
+              sellerWalletId: sellerWallet.id,
+            })
+          : await this.escrow.create(buyerId, dtoIn);
       await this.prisma.business_escrows.update({
         where: { id },
         data: { escrow_contract_id: res.data.id },

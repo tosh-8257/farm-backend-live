@@ -3,6 +3,8 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsDateString,
+  IsUUID,
   ValidateNested,
   IsBoolean,
   IsIn,
@@ -124,4 +126,36 @@ export class MilestoneRequestDto {
 }
 export class MilestoneNotesDto {
   @IsOptional() @IsString() @MaxLength(5000) notes?: string;
+}
+
+export class FundsSettingsDto {
+  @IsIn(['off', 'monthly', 'on_deposit', 'period_end'])
+  distribution_mode!: string;
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  distribution_percent!: number;
+  @IsOptional() @IsDateString() distribution_period_end?: string;
+  @IsOptional() @IsIn(['profit', 'rental']) income_kind?: string;
+}
+export class ReturnDepositDto {
+  @IsNumber({ maxDecimalPlaces: 2 }) @Min(1) amount!: number;
+  @IsOptional() @IsUUID() transaction_id?: string;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
+  @IsString() @Length(4, 12) pin!: string;
+}
+export class ProjectSpendDto {
+  @IsIn(['invoice', 'payment_link']) kind!: string;
+  /** Invoice number or payment link code. */
+  @IsString() @Length(1, 100) ref!: string;
+  @IsString() @Length(4, 12) pin!: string;
+  /** Optional deliverable tag, e.g. "Greenhouse kit". */
+  @IsOptional() @IsString() @MaxLength(120) tag?: string;
+  @IsOptional() @IsString() @MaxLength(500) note?: string;
+  /** Client retry key; the same key never pays twice. */
+  @IsOptional() @IsString() @Length(8, 80) idempotency_key?: string;
+}
+export class FundsPauseDto {
+  @IsBoolean() paused!: boolean;
+  @IsOptional() @IsString() @MaxLength(300) reason?: string;
 }

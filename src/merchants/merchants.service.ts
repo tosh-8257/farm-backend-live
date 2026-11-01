@@ -9,6 +9,11 @@ import { CacheService } from '../common/cache/cache.service';
 import { paginationParams, paginate } from '../common/utils/pagination.util';
 import { randomBytes } from 'crypto';
 
+import {
+  businessWalletEnabled,
+  settlementWalletFor,
+} from '../business-ops/business-wallet';
+
 @Injectable()
 export class MerchantsService {
   constructor(
@@ -412,9 +417,15 @@ export class MerchantsService {
     const merchant = await this.getMerchantByUser(userId);
     if (merchant.status !== 'approved')
       throw new ForbiddenException('Merchant not approved');
-    const wallet = await this.prisma.wallets.findFirst({
-      where: { user_id: userId },
-    });
+    // BUSINESS_WALLET_ENABLED: the business wallet funds merchant payouts.
+    const wallet = businessWalletEnabled()
+      ? await settlementWalletFor(this.prisma, {
+          merchantId: merchant.id,
+          ownerUserId: userId,
+        })
+      : await this.prisma.wallets.findFirst({
+          where: { user_id: userId },
+        });
     const available =
       Number(wallet?.balance || 0) - Number(wallet?.locked_balance || 0);
     if (available < dto.amount)

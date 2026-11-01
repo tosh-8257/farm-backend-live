@@ -6,6 +6,9 @@ import { TokenizationModule } from '../tokenization/tokenization.module';
 import { MarketplaceService } from './marketplace.service';
 import { BusinessProjectsService } from './business-projects.service';
 import { ProjectReviewService } from './project-review.service';
+import { ProjectFundsService } from './project-funds.service';
+import { ProjectFundsChainService } from './project-funds-chain.service';
+import { ChainWalletModule } from '../chain-wallet/chain-wallet.module';
 import {
   AdminProjectsController,
   BusinessProjectsController,
@@ -18,6 +21,7 @@ import {
     NotificationsModule,
     BusinessOpsModule,
     TokenizationModule,
+    ChainWalletModule,
   ],
   controllers: [
     MarketplaceController,
@@ -28,6 +32,8 @@ import {
     MarketplaceService,
     BusinessProjectsService,
     ProjectReviewService,
+    ProjectFundsService,
+    ProjectFundsChainService,
   ],
   exports: [MarketplaceService, BusinessProjectsService],
 })

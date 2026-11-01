@@ -81,12 +81,14 @@ export function reserveLeft(p: {
   consolidation_fee?: any;
   consolidation_refunded?: any;
   consolidation_released?: any;
+  consolidation_bought_back?: any;
 }) {
   return Math.max(
     0,
     Number(p.consolidation_fee ?? 0) -
       Number(p.consolidation_refunded ?? 0) -
-      Number(p.consolidation_released ?? 0),
+      Number(p.consolidation_released ?? 0) -
+      Number(p.consolidation_bought_back ?? 0),
   );
 }
 
@@ -106,7 +108,7 @@ export async function payFromReserveInTx(
     UPDATE investment_projects
        SET consolidation_refunded = consolidation_refunded + ${amount}, updated_at = now()
      WHERE id = ${projectId}::uuid
-       AND consolidation_refunded + consolidation_released + ${amount} <= consolidation_fee`;
+       AND consolidation_refunded + consolidation_released + consolidation_bought_back + ${amount} <= consolidation_fee`;
   if (claimed !== 1) throw new Error('Consolidation reserve exhausted');
   const admin = await tx.users.findFirst({
     where: { role: 'super_admin', is_deleted: false },
@@ -151,7 +153,7 @@ export async function releaseReserveToFarmInTx(
     UPDATE investment_projects
        SET consolidation_released = consolidation_released + ${amount}, updated_at = now()
      WHERE id = ${projectId}::uuid
-       AND consolidation_refunded + consolidation_released + ${amount} <= consolidation_fee`;
+       AND consolidation_refunded + consolidation_released + consolidation_bought_back + ${amount} <= consolidation_fee`;
   if (claimed !== 1) throw new Error('Consolidation reserve exhausted');
   const admin = await tx.users.findFirst({
     where: { role: 'super_admin', is_deleted: false },
@@ -177,4 +179,49 @@ export async function releaseReserveToFarmInTx(
       },
     });
   }
+}
+
+/**
+ * Token buyback: pay `amount` out of one project's reserve (guarded claim on
+ * the project row, never more than what is left), debit the platform wallet
+ * (category consolidation_fund). Returns false if the pool is too small.
+ */
+export async function payBuybackFromReserveInTx(
+  tx: any,
+  projectId: string,
+  amount: number,
+  transactionId: string,
+): Promise<boolean> {
+  if (!(amount > 0)) return false;
+  const claimed = await tx.$executeRaw`
+    UPDATE investment_projects
+       SET consolidation_bought_back = consolidation_bought_back + ${amount}, updated_at = now()
+     WHERE id = ${projectId}::uuid
+       AND consolidation_fee_at IS NOT NULL
+       AND consolidation_refunded + consolidation_released + consolidation_bought_back + ${amount} <= consolidation_fee`;
+  if (claimed !== 1) return false;
+  const admin = await tx.users.findFirst({
+    where: { role: 'super_admin', is_deleted: false },
+    include: { wallets: { where: { is_active: true }, take: 1 } },
+  });
+  const w = admin?.wallets?.[0];
+  if (!w) throw new Error('Platform wallet not found');
+  const before = Number(w.balance ?? 0);
+  await tx.wallets.update({
+    where: { id: w.id },
+    data: { balance: { decrement: amount } },
+  });
+  await tx.ledger_entries.create({
+    data: {
+      transaction_id: transactionId,
+      wallet_id: w.id,
+      entry_type: 'debit',
+      amount,
+      balance_before: before,
+      balance_after: before - amount,
+      description: `Consolidation fund token buyback (project ${projectId})`,
+      category: CONSOLIDATION_CATEGORY,
+    },
+  });
+  return true;
 }

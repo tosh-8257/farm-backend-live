@@ -23,6 +23,8 @@ import {
   PUBLIC_CHECKOUT_BASE_URL,
 } from './merchant-checkout.constants';
 
+import { settlementWalletFor } from '../business-ops/business-wallet';
+
 @Injectable()
 export class QrService {
   private readonly logger = new Logger(QrService.name);
@@ -317,12 +319,10 @@ export class QrService {
     const customerWallet = await this.prisma.wallets.findFirst({
       where: { user_id: customerId, wallet_type: 'user', is_active: true },
     });
-    const merchantWallet = await this.prisma.wallets.findFirst({
-      where: {
-        user_id: merchant.user_id,
-        wallet_type: 'user',
-        is_active: true,
-      },
+    // BUSINESS_WALLET_ENABLED: settle into the business wallet (legacy: owner's personal wallet).
+    const merchantWallet = await settlementWalletFor(this.prisma, {
+      merchantId: merchant.id,
+      ownerUserId: merchant.user_id,
     });
     if (!customerWallet || !merchantWallet)
       throw new NotFoundException('Wallet not found');
