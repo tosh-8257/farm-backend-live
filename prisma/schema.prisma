@@ -963,6 +963,7 @@ enum transaction_type {
   fee
   investment_refund
   token_buyback
+  token_distribution
   investment_settlement
   conversion
   cross_border
@@ -1649,7 +1650,11 @@ model project_tokens {
 model token_allocations {
   id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   project_token_id String         @db.Uuid
-  investment_id    String         @unique @db.Uuid
+  /// null for holdings received by transfer (no investment behind them)
+  investment_id    String?        @unique @db.Uuid
+  /// investment | transfer
+  source           String         @default("investment") @db.VarChar(20)
+  from_allocation_id String?      @db.Uuid
   user_id          String         @db.Uuid
   units            BigInt
   custody          String         @default("farm_custody") @db.VarChar(30)
@@ -2183,4 +2188,74 @@ model token_buybacks {
   @@index([project_id, status])
   @@index([user_id])
   @@index([status])
+}
+
+/// Token transfers between FARM users (TOKEN_TRANSFERS_ENABLED).
+/// mode db = held/owed holdings (DB move); chain = delivered (ASA move).
+model token_transfers {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_token_id   String    @db.Uuid
+  from_allocation_id String    @db.Uuid
+  to_allocation_id   String?   @db.Uuid
+  from_user_id       String    @db.Uuid
+  to_user_id         String    @db.Uuid
+  units              BigInt
+  mode               String    @db.VarChar(10)
+  /// sending | completed | reverted | failed
+  status             String    @default("sending") @db.VarChar(20)
+  from_address       String?   @db.VarChar(64)
+  to_address         String?   @db.VarChar(64)
+  tx_id              String?   @db.VarChar(64)
+  last_valid         BigInt?
+  error              String?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([from_user_id])
+  @@index([to_user_id])
+  @@index([status])
+}
+
+/// Profit / rental income paid pro-rata to current token holders
+/// (TOKEN_DISTRIBUTIONS_ENABLED). Admin approval before payout.
+model token_distributions {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id           String    @db.Uuid
+  project_token_id     String    @db.Uuid
+  /// profit | rental
+  kind                 String    @default("profit") @db.VarChar(20)
+  amount               Decimal   @db.Decimal(30, 8)
+  fee                  Decimal   @default(0) @db.Decimal(30, 8)
+  /// requested | paying | paid | rejected | failed
+  status               String    @default("requested") @db.VarChar(20)
+  description          String?   @db.VarChar(500)
+  requested_by         String    @db.Uuid
+  reviewed_by          String?   @db.Uuid
+  notes                String?
+  total_units          BigInt?
+  paid_amount          Decimal?  @db.Decimal(30, 8)
+  holders              Int?
+  snapshot_at          DateTime? @db.Timestamptz(6)
+  debit_transaction_id String?   @db.Uuid
+  error                String?
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  payouts              token_distribution_payouts[]
+
+  @@index([project_id])
+  @@index([status])
+}
+
+model token_distribution_payouts {
+  id              String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  distribution_id String              @db.Uuid
+  user_id         String              @db.Uuid
+  units           BigInt
+  amount          Decimal             @db.Decimal(30, 8)
+  transaction_id  String?             @db.Uuid
+  created_at      DateTime            @default(now()) @db.Timestamptz(6)
+  distribution    token_distributions @relation(fields: [distribution_id], references: [id], onDelete: Cascade)
+
+  @@unique([distribution_id, user_id])
+  @@index([user_id])
 }

@@ -120,6 +120,12 @@ export class TokenBuybackService {
     });
     if (!a || a.user_id !== userId)
       throw new NotFoundException('Token holding not found');
+    // Sell-back is tied to the original investment: tokens received by
+    // transfer carry no sell-back allowance.
+    if (!a.investment_id)
+      throw new BadRequestException(
+        'Tokens received by transfer cannot be sold back. Only tokens from your own investment can.',
+      );
     if (!SELLABLE.includes(a.status))
       throw new BadRequestException('These tokens cannot be sold back now');
     const free = BigInt(a.units) - BigInt(a.sold_units ?? 0);
@@ -364,7 +370,7 @@ export class TokenBuybackService {
             ...(left <= 0n ? { status: 'sold_back' } : {}),
           },
         });
-        if (!held.count || left < 0n)
+        if (!a.investment_id || !held.count || left < 0n)
           throw new BadRequestException('Holding changed, retry');
         await tx.user_investments.update({
           where: { id: a.investment_id },

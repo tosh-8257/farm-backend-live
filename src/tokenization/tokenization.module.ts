@@ -6,9 +6,13 @@ import { AlgorandAsaClient } from './algorand-asa.client';
 import { TokenizationService } from './tokenization.service';
 import { TokenDeliveryService } from './token-delivery.service';
 import { TokenBuybackService } from './token-buyback.service';
+import { TokenTransferService } from './token-transfer.service';
+import { TokenDistributionService } from './token-distribution.service';
 import {
   AdminTokenBuybackController,
+  AdminTokenDistributionController,
   AdminTokenizationController,
+  TokenHolderController,
   TokenBuybackController,
   TokenizationController,
 } from './tokenization.controller';
@@ -20,12 +24,16 @@ import {
     AdminTokenizationController,
     TokenBuybackController,
     AdminTokenBuybackController,
+    TokenHolderController,
+    AdminTokenDistributionController,
   ],
   providers: [
     TokenizationService,
     AlgorandAsaClient,
     TokenDeliveryService,
     TokenBuybackService,
+    TokenTransferService,
+    TokenDistributionService,
   ],
   exports: [TokenizationService, TokenDeliveryService],
 })

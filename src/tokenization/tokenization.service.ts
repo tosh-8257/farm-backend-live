@@ -455,12 +455,25 @@ export class TokenizationService {
         allow.set(pid, await this.buyback.allowance(userId, pid));
     return {
       buyback_enabled: buybackEnabled(),
+      transfers_enabled: process.env.TOKEN_TRANSFERS_ENABLED === 'true',
+      distributions_enabled: process.env.TOKEN_DISTRIBUTIONS_ENABLED === 'true',
       data: rows.map((a) => ({
         sold_units: (a.sold_units ?? 0n).toString(),
         sellable_units: (
           BigInt(a.units) - BigInt(a.sold_units ?? 0n)
         ).toString(),
-        sell_back: allow.get(a.token.project_id) ?? null,
+        source: a.source ?? 'investment',
+        can_send:
+          process.env.TOKEN_TRANSFERS_ENABLED === 'true' &&
+          ['held', 'owed', 'delivered'].includes(a.status) &&
+          BigInt(a.units) - BigInt(a.sold_units ?? 0n) > 0n,
+        transferable_units: (
+          BigInt(a.units) - BigInt(a.sold_units ?? 0n)
+        ).toString(),
+        // Received by transfer: no sell-back allowance (tied to investment).
+        sell_back: a.investment_id
+          ? (allow.get(a.token.project_id) ?? null)
+          : null,
         id: a.id,
         investment_id: a.investment_id,
         units: a.units.toString(),
