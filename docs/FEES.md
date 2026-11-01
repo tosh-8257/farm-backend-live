@@ -34,3 +34,14 @@ Fee semantics: `percent × amount + flat`, floored at `minimum_fee`, capped at `
 - **Investment fee (3%)** is never refunded.
 - **Investors are shown the terms before investing:** the project detail returns `fees.points` with live rates, and the risk disclosure (version 2026-10-v2, re-acceptance required) includes the fee terms.
 - Reporting: `SELECT SUM(CASE entry_type WHEN 'credit' THEN amount ELSE -amount END) FROM ledger_entries WHERE category='consolidation_fund'` = total reserve held.
+
+
+## Token buyback (sell-back) from the 15% fund — `TOKEN_BUYBACK_ENABLED` (default off)
+
+- **Who pays what:** investors pay only the 3% `investment` fee on top of each purchase, tokenized projects included; tokens are issued on the principal (1 FARM = 1 token). The 15% is never charged to investors.
+- **Business commitment:** when a business requests tokenization it must accept (`accept_buyback_commitment: true`, stored as `project_tokens.buyback_commitment_at`) that 15% of what the project raises is held back from it (the consolidation fund above) as the buyback pool.
+- **Per investor:** each investor can sell back at most `consolidation_fee / raised` (15%) of what they invested in that project, cumulative. Over the limit is rejected, not queued. The pool left (fee − refunded − released − bought_back) is also checked, at request and in a guarded SQL claim at payout.
+- **Only after the fund exists:** project `funded`/`closed` with `consolidation_fee_at` set.
+- **Admin approval** for every buyback. Delivered tokens are clawed back to the issuer on-chain first (txId stored before sending, idempotent); FARM is credited only after. Held/owed tokens are DB-only.
+- **Accounting:** `token_buyback` transaction, credit to the investor wallet, debit from the platform wallet with category `consolidation_fund`; `investment_projects.consolidation_bought_back`, `user_investments.sold_back_amount`, `token_allocations.sold_units`. Cancel/loss refunds use amount − sold_back_amount.
+- **Open decision:** on successful completion the remaining 15% fund is currently reclassified to FARM revenue (not returned to the business). That was left unchanged.

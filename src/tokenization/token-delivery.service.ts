@@ -71,6 +71,16 @@ export class TokenDeliveryService {
     });
     if (!a || a.status !== 'owed' || a.token.asset_id == null) return 'skip';
     if (!DELIVERABLE.includes(a.token.project?.status ?? '')) return 'skip';
+    const toSend = BigInt(a.units) - BigInt(a.sold_units ?? 0);
+    if (toSend <= 0n) return 'skip';
+    // Never race an open sell-back of the same holding.
+    const openBuyback = await this.prisma.token_buybacks.count({
+      where: {
+        allocation_id: a.id,
+        status: { in: ['requested', 'approved', 'returning'] },
+      },
+    });
+    if (openBuyback) return 'buyback_open';
     const w = await this.prisma.user_chain_wallets.findUnique({
       where: { user_id: a.user_id },
     });
@@ -116,7 +126,7 @@ export class TokenDeliveryService {
         signer: issuer,
         to: w.address,
         assetId,
-        amount: BigInt(a.units),
+        amount: toSend,
         note: `farm:token:${a.id}`,
       });
       await this.prisma.token_allocations.update({
@@ -235,7 +245,7 @@ export class TokenDeliveryService {
         from: a.address,
         to: issuer.address,
         assetId: BigInt(a.token.asset_id),
-        amount: BigInt(a.units),
+        amount: BigInt(a.units) - BigInt(a.sold_units ?? 0),
         note: `farm:token:clawback:${a.id}`,
       });
       await this.prisma.token_allocations.update({

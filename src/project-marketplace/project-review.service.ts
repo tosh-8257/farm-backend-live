@@ -185,6 +185,7 @@ export class ProjectReviewService {
         consolidation_fee: true,
         consolidation_refunded: true,
         consolidation_released: true,
+        consolidation_bought_back: true,
       },
     });
     const raised = Number(p?.raised_amount ?? 0);
@@ -198,7 +199,11 @@ export class ProjectReviewService {
     let total = 0;
     let fromReserve = 0;
     for (const inv of rows) {
-      const amt = Number(inv.amount ?? 0);
+      // Tokens already sold back were paid from the reserve: not refunded twice.
+      const amt = Math.max(
+        0,
+        Number(inv.amount ?? 0) - Number((inv as any).sold_back_amount ?? 0),
+      );
       const heldPart = Math.floor(amt * heldShare * 100) / 100;
       const reservePart = Math.floor(amt * reserveShare * 100) / 100;
       const refund = Number((heldPart + reservePart).toFixed(2));
@@ -247,6 +252,7 @@ export class ProjectReviewService {
         consolidation_fee: true,
         consolidation_refunded: true,
         consolidation_released: true,
+        consolidation_bought_back: true,
         consolidation_fee_at: true,
         status: true,
       },
@@ -276,7 +282,16 @@ export class ProjectReviewService {
       .map((inv) => ({
         inv,
         amount:
-          Math.floor((Number(inv.amount ?? 0) * reserve * 100) / raised) / 100,
+          Math.floor(
+            (Math.max(
+              0,
+              Number(inv.amount ?? 0) -
+                Number((inv as any).sold_back_amount ?? 0),
+            ) *
+              reserve *
+              100) /
+              raised,
+          ) / 100,
       }))
       .filter((x) => x.amount > 0);
     const total = await this.prisma.$transaction(async (tx) => {
@@ -328,6 +343,7 @@ export class ProjectReviewService {
         consolidation_fee: true,
         consolidation_refunded: true,
         consolidation_released: true,
+        consolidation_bought_back: true,
         consolidation_fee_at: true,
       },
     });
