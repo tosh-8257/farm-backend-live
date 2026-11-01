@@ -216,7 +216,8 @@ function distMocks(o: any = {}) {
         id: 'd1',
         project_id: 'p1',
         amount: 100,
-        fee: 0,
+        fee: o.fee ?? 0,
+        source: o.source,
         kind: 'rental',
         status: 'requested',
       }),
@@ -252,7 +253,14 @@ function distMocks(o: any = {}) {
     transactions: { create: jest.fn().mockResolvedValue({ id: 'tx' }) },
     ledger_entries: { create: jest.fn() },
     token_distribution_payouts: { create: jest.fn() },
+    users: {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue({ id: 'admin', wallets: [{ id: 'pw' }] }),
+    },
+    $executeRaw: jest.fn().mockResolvedValue(o.returnsClaim ?? 1),
   };
+  db.wallets.findUnique = jest.fn().mockResolvedValue({ id: 'pw', balance: 0 });
   db.$transaction = (fn: any) => fn(db);
   const access: any = {
     resolve: jest.fn().mockResolvedValue({ business: { id: 'biz' } }),
@@ -275,7 +283,7 @@ describe('TokenDistributionService', () => {
     expect(db.token_distributions.create).not.toHaveBeenCalled();
   });
 
-  it('business request waits for admin approval, fee 0', async () => {
+  it('business request waits for admin approval, 2% FARM fee', async () => {
     const { svc, db } = distMocks();
     const r = await svc.businessRequest('b', 'p1', {
       amount: 50,
@@ -284,7 +292,7 @@ describe('TokenDistributionService', () => {
     expect(r.message).toMatch(/approval/);
     expect(db.token_distributions.create.mock.calls[0][0].data).toMatchObject({
       amount: 50,
-      fee: 0,
+      fee: 1,
       kind: 'rental',
     });
     expect(db.wallets.updateMany).not.toHaveBeenCalled();
@@ -337,5 +345,55 @@ describe('TokenDistributionService', () => {
     expect(
       db.token_distributions.updateMany.mock.calls.at(-1)[0].data.status,
     ).toBe('failed');
+  });
+
+  it('2% fee: holders split 98, the fee is FARM revenue', async () => {
+    const { svc, db } = distMocks({ fee: 2 });
+    const r = await svc.approve('admin', 'd1');
+    expect(r.data).toMatchObject({ paid: 98, fee: 2, holders: 2 });
+    expect(db.wallets.updateMany.mock.calls[0][0].data.balance.decrement).toBe(
+      100,
+    );
+    const pays = db.token_distribution_payouts.create.mock.calls.map(
+      (c: any) => c[0].data.amount,
+    );
+    expect(pays.reduce((a: number, b: number) => a + b, 0)).toBeCloseTo(98);
+    const fee = db.ledger_entries.create.mock.calls
+      .map((c: any) => c[0].data)
+      .find((d: any) => d.category === 'token_distribution_fee');
+    expect(fee).toMatchObject({
+      wallet_id: 'pw',
+      amount: 2,
+      entry_type: 'credit',
+    });
+  });
+
+  it('fee percent is configurable and clamped', () => {
+    const { distributionFee, distributionFeePercent } = jest.requireActual(
+      './token-distribution.service',
+    );
+    expect(distributionFee(50)).toBe(1);
+    expect(distributionFee(50, { TOKEN_DISTRIBUTION_FEE_PERCENT: '5' })).toBe(
+      2.5,
+    );
+    expect(
+      distributionFeePercent({ TOKEN_DISTRIBUTION_FEE_PERCENT: 'x' }),
+    ).toBe(2);
+  });
+
+  it('project_returns source pays from the platform wallet behind a guarded claim', async () => {
+    const { svc, db } = distMocks({ source: 'project_returns', fee: 2 });
+    await svc.approve('system', 'd1');
+    expect(db.$executeRaw).toHaveBeenCalled();
+    expect(db.wallets.updateMany).not.toHaveBeenCalled();
+    expect(db.wallets.update.mock.calls[0][0]).toMatchObject({
+      where: { id: 'pw' },
+      data: { balance: { decrement: 100 } },
+    });
+    const short = distMocks({ source: 'project_returns', returnsClaim: 0 });
+    await expect(short.svc.approve('system', 'd1')).rejects.toThrow(
+      /Not enough project returns/,
+    );
+    expect(short.db.token_distribution_payouts.create).not.toHaveBeenCalled();
   });
 });

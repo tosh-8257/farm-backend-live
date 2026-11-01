@@ -255,6 +255,18 @@ model investment_projects {
   consolidation_released Decimal              @default(0) @db.Decimal(30, 8)
   /// Token buybacks paid from this project's consolidation reserve
   consolidation_bought_back Decimal          @default(0) @db.Decimal(30, 8)
+  /// Funds flow: returns deposited to the project and paid out to holders
+  returns_deposited     Decimal  @default(0) @db.Decimal(30, 8)
+  returns_distributed   Decimal  @default(0) @db.Decimal(30, 8)
+  /// off | monthly | on_deposit | period_end
+  distribution_mode     String   @default("off") @db.VarChar(20)
+  distribution_percent  Decimal  @default(0) @db.Decimal(5, 2)
+  distribution_period_end DateTime? @db.Timestamptz(6)
+  /// profit | rental (kind of the automatic holder payouts)
+  income_kind             String    @default("profit") @db.VarChar(20)
+  /// Admin pause of automatic spends/payouts for this project
+  funds_paused            Boolean   @default(false)
+  funds_paused_reason     String?   @db.VarChar(300)
   milestones             project_milestones[]
   token                  project_tokens?
   business               businesses?          @relation("business_projects", fields: [business_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -964,6 +976,7 @@ enum transaction_type {
   investment_refund
   token_buyback
   token_distribution
+  project_return
   investment_settlement
   conversion
   cross_border
@@ -2237,6 +2250,10 @@ model token_distributions {
   holders              Int?
   snapshot_at          DateTime? @db.Timestamptz(6)
   debit_transaction_id String?   @db.Uuid
+  /// business_wallet | project_returns
+  source               String    @default("business_wallet") @db.VarChar(20)
+  /// Auto proposals: one per (project, period), e.g. m:2026-11, end, r:<return id>
+  period_key           String?   @db.VarChar(60)
   error                String?
   created_at           DateTime  @default(now()) @db.Timestamptz(6)
   updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -2258,4 +2275,100 @@ model token_distribution_payouts {
 
   @@unique([distribution_id, user_id])
   @@index([user_id])
+}
+
+/// Funds flow: returns deposited to a project (held in the platform wallet,
+/// ledger category project_returns) until distributed to token holders.
+model project_returns {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id            String   @db.Uuid
+  amount                Decimal  @db.Decimal(30, 8)
+  /// manual | merchant_payment
+  source                String   @db.VarChar(20)
+  source_transaction_id String?  @unique @db.Uuid
+  note                  String?  @db.VarChar(500)
+  deposited_by          String   @db.Uuid
+  transaction_id        String?  @db.Uuid
+  created_at            DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([project_id])
+}
+
+/// On-chain escrow account per project (dedicated custodial Algorand account).
+model project_escrows {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id    String   @unique @db.Uuid
+  network       String   @db.VarChar(20)
+  address       String   @unique @db.VarChar(64)
+  enc_secret    String
+  enc_iv        String   @db.VarChar(32)
+  enc_tag       String   @db.VarChar(32)
+  key_version   Int      @default(1)
+  key_scheme    String   @default("ed25519") @db.VarChar(16)
+  funded_tx_id  String?  @db.VarChar(64)
+  farm_opt_in_tx String? @db.VarChar(64)
+  /// created | provisioning | ready | failed
+  status        String   @default("created") @db.VarChar(20)
+  error         String?
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+/// A payment made from project funds (invoice or payment link of another FARM business/user).
+model project_spends {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id            String   @db.Uuid
+  /// invoice | payment_link
+  target_kind           String   @db.VarChar(20)
+  target_id             String   @db.Uuid
+  recipient_business_id String   @db.Uuid
+  recipient_user_id     String   @db.Uuid
+  amount                Decimal  @db.Decimal(30, 8)
+  tag                   String?  @db.VarChar(120)
+  note                  String?  @db.VarChar(500)
+  idempotency_key       String   @unique @db.VarChar(120)
+  transaction_id        String?  @db.Uuid
+  transaction_reference String?  @db.VarChar(100)
+  created_by            String   @db.Uuid
+  created_at            DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([project_id, created_at])
+}
+
+/// Outbox of on-chain FARM moves mirroring project money (escrow in/out).
+model project_chain_moves {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id   String   @db.Uuid
+  /// fund | spend | return_in | holder | fee
+  kind         String   @db.VarChar(20)
+  ref_id       String?  @db.Uuid
+  from_address String   @db.VarChar(64)
+  to_address   String   @db.VarChar(64)
+  units        BigInt
+  move_key     String   @unique @db.VarChar(160)
+  /// pending | sending | sent | failed | blocked
+  status       String   @default("pending") @db.VarChar(20)
+  tx_id        String?  @db.VarChar(64)
+  last_valid   BigInt?
+  attempts     Int      @default(0)
+  error        String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([status, created_at])
+  @@index([project_id])
+}
+
+/// Append-only audit log of the project funds flow.
+model project_funds_audit {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id String?  @db.Uuid
+  action     String   @db.VarChar(40)
+  actor      String?  @db.VarChar(64)
+  amount     Decimal? @db.Decimal(30, 8)
+  detail     Json?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([project_id, created_at])
+  @@index([action, created_at])
 }

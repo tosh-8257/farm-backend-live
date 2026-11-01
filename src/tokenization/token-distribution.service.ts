@@ -8,12 +8,22 @@ import { PrismaService } from '../database/prisma.service';
 import { BusinessAccessService } from '../business-ops/business-access.service';
 import { generateTxReference } from '../common/utils/reference.util';
 import { AlgorandWalletClient } from '../chain-wallet/algorand-wallet.client';
+import { creditPlatformInTx } from '../fees/fee-defaults';
 
 export const distributionsEnabled = (env: NodeJS.ProcessEnv = process.env) =>
   env.TOKEN_DISTRIBUTIONS_ENABLED === 'true';
 
-/** Platform fee on distributions. 0 for now (decision pending). */
-export const DISTRIBUTION_FEE = 0;
+/**
+ * FARM fee on holder income payouts, in percent of the payout (default 2).
+ * Holders split the rest pro-rata. Set TOKEN_DISTRIBUTION_FEE_PERCENT (0-20).
+ */
+export function distributionFeePercent(env: NodeJS.ProcessEnv = process.env) {
+  const v = Number(env.TOKEN_DISTRIBUTION_FEE_PERCENT ?? 2);
+  return Number.isFinite(v) && v >= 0 && v <= 20 ? v : 2;
+}
+export const distributionFee = (amount: number, env = process.env) =>
+  Math.floor(amount * distributionFeePercent(env) + 1e-6) / 100;
+export const DISTRIBUTION_FEE_CATEGORY = 'token_distribution_fee';
 
 /** DB holdings that count at the snapshot (not on-chain yet). */
 const DB_HELD = ['held', 'owed'];
@@ -103,12 +113,52 @@ export class TokenDistributionService {
         project_token_id: p.token.id,
         kind,
         amount,
-        fee: DISTRIBUTION_FEE,
+        fee: distributionFee(amount),
         description: dto.description?.trim().slice(0, 500) || null,
         requested_by: by,
       },
     });
     return { data: this.shape(row), message: 'Sent to FARM for approval' };
+  }
+
+  /**
+   * System proposal from project settings (funds flow). Creates a REQUESTED
+   * distribution paid from project returns; an admin still approves it.
+   * Idempotent per (project, periodKey). Returns null when skipped.
+   */
+  async propose(
+    projectId: string,
+    amount: number,
+    kind: string,
+    periodKey: string,
+    description: string,
+  ) {
+    const amt = r2(amount);
+    if (!(amt >= 1)) return null;
+    const p = await this.prisma.investment_projects.findUnique({
+      where: { id: projectId },
+      include: { token: true, business: true },
+    });
+    if (!p?.token || p.token.status !== 'created' || p.status === 'cancelled')
+      return null;
+    try {
+      return await this.prisma.token_distributions.create({
+        data: {
+          project_id: projectId,
+          project_token_id: p.token.id,
+          kind: KINDS.includes(kind) ? kind : 'profit',
+          amount: amt,
+          fee: distributionFee(amount),
+          description: description.slice(0, 500),
+          requested_by: p.business?.owner_user_id ?? projectId,
+          source: 'project_returns',
+          period_key: periodKey,
+        },
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002') return null; // already proposed for this period
+      throw e;
+    }
   }
 
   async businessRequest(userId: string, projectId: string, dto: any) {
@@ -250,10 +300,11 @@ export class TokenDistributionService {
       BigInt(p.token!.asset_id!),
     );
     const amount = Number(d.amount);
-    const { total, rows } = splitProRata(amount, holders);
+    const fee = Number(d.fee ?? 0);
+    // Holders split the payout minus the FARM fee; dust stays with the payer.
+    const { total, rows } = splitProRata(r2(amount - fee), holders);
     if (!rows.length) throw new BadRequestException('No token holders to pay');
     const paid = r2(rows.reduce((s, r) => s + r.amount, 0));
-    const fee = Number(d.fee ?? 0);
     const owner = p.business?.owner_user_id;
     if (!owner) throw new BadRequestException('Business owner not found');
     try {
@@ -264,19 +315,45 @@ export class TokenDistributionService {
         });
         if (!c.count)
           throw new BadRequestException('Distribution already handled');
-        const bw = await tx.wallets.findFirst({
-          where: { user_id: owner, is_active: true },
-        });
-        if (!bw) throw new BadRequestException('Business wallet not found');
+        const fromReturns = d.source === 'project_returns';
         const debit = r2(paid + fee);
-        const took = await tx.wallets.updateMany({
-          where: { id: bw.id, balance: { gte: debit } },
-          data: { balance: { decrement: debit } },
-        });
-        if (!took.count)
-          throw new BadRequestException(
-            `The business wallet needs ${debit} FARM for this payout`,
-          );
+        let bw: { id: string } | null;
+        if (fromReturns) {
+          // Funds flow: paid from returns deposited to the project (held in
+          // the platform wallet), never more than what is left for it.
+          const claimed = await tx.$executeRaw`
+            UPDATE investment_projects
+               SET returns_distributed = returns_distributed + ${debit}, updated_at = now()
+             WHERE id = ${d.project_id}::uuid
+               AND returns_distributed + ${debit} <= returns_deposited`;
+          if (claimed !== 1)
+            throw new BadRequestException(
+              'Not enough project returns left for this payout',
+            );
+          const admin = await tx.users.findFirst({
+            where: { role: 'super_admin', is_deleted: false },
+            include: { wallets: { where: { is_active: true }, take: 1 } },
+          });
+          bw = admin?.wallets?.[0] ?? null;
+          if (!bw) throw new BadRequestException('Platform wallet not found');
+          await tx.wallets.update({
+            where: { id: bw.id },
+            data: { balance: { decrement: debit } },
+          });
+        } else {
+          bw = await tx.wallets.findFirst({
+            where: { user_id: owner, is_active: true },
+          });
+          if (!bw) throw new BadRequestException('Business wallet not found');
+          const took = await tx.wallets.updateMany({
+            where: { id: bw.id, balance: { gte: debit } },
+            data: { balance: { decrement: debit } },
+          });
+          if (!took.count)
+            throw new BadRequestException(
+              `The business wallet needs ${debit} FARM for this payout`,
+            );
+        }
         const dt = await tx.transactions.create({
           data: {
             transaction_reference: generateTxReference(),
@@ -287,7 +364,11 @@ export class TokenDistributionService {
             fee,
             net_amount: paid,
             description: `Holder ${d.kind} payout (${rows.length} holders)`,
-            metadata: { distribution_id: id, project_id: d.project_id },
+            metadata: {
+              distribution_id: id,
+              project_id: d.project_id,
+              source: d.source ?? 'business_wallet',
+            },
             processed_at: new Date(),
           },
         });
@@ -298,7 +379,7 @@ export class TokenDistributionService {
             entry_type: 'debit',
             amount: debit,
             description: 'Token holder payout',
-            category: 'token_distribution',
+            category: fromReturns ? 'project_returns' : 'token_distribution',
           },
         });
         for (const h of rows) {
@@ -347,6 +428,14 @@ export class TokenDistributionService {
             },
           });
         }
+        if (fee > 0)
+          await creditPlatformInTx(
+            tx,
+            fee,
+            `Token income payout fee (${distributionFeePercent()}%)`,
+            dt.id,
+            DISTRIBUTION_FEE_CATEGORY,
+          );
         await tx.token_distributions.update({
           where: { id },
           data: {
@@ -361,8 +450,10 @@ export class TokenDistributionService {
           id,
           status: 'paid',
           paid,
+          fee,
           holders: rows.length,
           total_units: total.toString(),
+          payouts: rows.map((r) => ({ user_id: r.user_id, amount: r.amount })),
         };
       });
       return { data: out };

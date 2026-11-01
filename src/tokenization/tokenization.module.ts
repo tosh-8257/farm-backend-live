@@ -35,6 +35,10 @@ import {
     TokenTransferService,
     TokenDistributionService,
   ],
-  exports: [TokenizationService, TokenDeliveryService],
+  exports: [
+    TokenizationService,
+    TokenDeliveryService,
+    TokenDistributionService,
+  ],
 })
 export class TokenizationModule {}
