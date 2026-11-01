@@ -71,10 +71,25 @@ export class ChainSyncService {
         })
       : [];
     const addrByUser = new Map(cws.map((c) => [c.user_id, c.address]));
+    // Business (merchant) wallets have their own custodial account.
+    const bizIds = ws
+      .filter((w) => !w.user_id && w.wallet_type === 'merchant')
+      .map((w) => w.id);
+    const bws = bizIds.length
+      ? await this.prisma.business_chain_wallets?.findMany({
+          where: { wallet_id: { in: bizIds }, status: 'ready' },
+          select: { wallet_id: true, address: true },
+        })
+      : [];
+    const addrByWallet = new Map(
+      (bws ?? []).map((b) => [b.wallet_id, b.address]),
+    );
     const reserve = process.env.FARM_RESERVE_ADDRESS!;
     return new Map(
       ws.map((w) => {
-        const a = w.user_id ? addrByUser.get(w.user_id) : undefined;
+        const a = w.user_id
+          ? addrByUser.get(w.user_id)
+          : addrByWallet.get(w.id);
         return [
           w.id,
           a
@@ -211,9 +226,13 @@ export class ChainSyncService {
   /** Receive-only guard: only FARM-controlled destinations. */
   private async assertInternal(address: string) {
     if (address === process.env.FARM_RESERVE_ADDRESS) return;
-    const w = await this.prisma.user_chain_wallets.findUnique({
-      where: { address },
-    });
+    const w =
+      (await this.prisma.user_chain_wallets.findUnique({
+        where: { address },
+      })) ??
+      (await this.prisma.business_chain_wallets?.findUnique({
+        where: { address },
+      }));
     if (!w)
       throw new Error(
         'Destination is not a FARM account (receive-only policy)',
@@ -287,9 +306,13 @@ export class ChainSyncService {
       if (r.from_address === process.env.FARM_RESERVE_ADDRESS)
         sk = this.chain.reserveSigner();
       else {
-        const w = await this.prisma.user_chain_wallets.findUnique({
-          where: { address: r.from_address },
-        });
+        const w =
+          (await this.prisma.user_chain_wallets.findUnique({
+            where: { address: r.from_address },
+          })) ??
+          (await this.prisma.business_chain_wallets?.findUnique({
+            where: { address: r.from_address },
+          }));
         if (!w || w.status !== 'ready')
           throw new Error('Sender wallet not ready');
         await this.topup?.ensure(r.from_address, 'sync');

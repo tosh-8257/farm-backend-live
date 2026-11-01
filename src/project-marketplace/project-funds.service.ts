@@ -16,6 +16,7 @@ import { creditPlatformInTx } from '../fees/fee-defaults';
 import { TokenDistributionService } from '../tokenization/token-distribution.service';
 import { EDITABLE, RELEASABLE } from './project-rules';
 import { ProjectFundsChainService } from './project-funds-chain.service';
+import { settlementWalletFor } from '../business-ops/business-wallet';
 import {
   CAPPED_ACTIONS,
   DISTRIBUTION_MODES,
@@ -339,8 +340,9 @@ export class ProjectFundsService {
           if (!c.count)
             throw new BadRequestException('Payment link changed; try again');
         }
-        const w = await tx.wallets.findFirst({
-          where: { user_id: rb.owner_user_id, is_active: true },
+        // BUSINESS_WALLET_ENABLED: the recipient business's own wallet.
+        const w = await settlementWalletFor(tx, {
+          ownerUserId: rb.owner_user_id,
         });
         if (!w) throw new BadRequestException('Recipient wallet not found');
         await tx.wallets.update({
@@ -488,9 +490,8 @@ export class ProjectFundsService {
     let ret: any;
     try {
       ret = await this.prisma.$transaction(async (tx) => {
-        const w = await tx.wallets.findFirst({
-          where: { user_id: owner, is_active: true },
-        });
+        // Returns come from the business wallet (legacy: owner's personal wallet).
+        const w = await settlementWalletFor(tx, { ownerUserId: owner });
         if (!w) throw new BadRequestException('Business wallet not found');
         if (dto.transaction_id) {
           // Tag a merchant payment the business received to this project.

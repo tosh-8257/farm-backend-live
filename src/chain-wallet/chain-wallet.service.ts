@@ -2,8 +2,10 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
 import { generateTxReference } from '../common/utils/reference.util';
@@ -23,6 +25,8 @@ import { chainReadiness } from './readiness';
 const explorer = (net: string) =>
   `https://${net === 'testnet' ? 'testnet.' : ''}explorer.perawallet.app`;
 
+import { businessWalletEnabled } from '../business-ops/business-wallet';
+
 @Injectable()
 export class ChainWalletService {
   private readonly log = new Logger(ChainWalletService.name);
@@ -31,7 +35,50 @@ export class ChainWalletService {
     private readonly prisma: PrismaService,
     private readonly chain: AlgorandWalletClient,
     private readonly rates: RateService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
+
+  /**
+   * Ready business Algorand accounts (BUSINESS_WALLET_ENABLED only). The
+   * deposit's user_id is the business owner; business_wallet_id routes the
+   * credit to the business wallet, never the owner's personal one.
+   */
+  private async businessOwners(
+    network: string,
+    addrs?: string[],
+    usdcOnly = false,
+  ) {
+    if (!businessWalletEnabled()) return [];
+    const rows =
+      (await (this.prisma as any).business_chain_wallets?.findMany({
+        where: {
+          network,
+          status: 'ready',
+          ...(addrs ? { address: { in: addrs } } : {}),
+          ...(usdcOnly ? { usdc_opt_in_tx: { not: null } } : {}),
+        },
+        select: {
+          address: true,
+          business_id: true,
+          wallet_id: true,
+          funded_tx_id: true,
+        },
+      })) ?? [];
+    if (!rows.length) return [];
+    const biz = await this.prisma.businesses.findMany({
+      where: { id: { in: rows.map((r: any) => r.business_id) } },
+      select: { id: true, owner_user_id: true },
+    });
+    const owner = new Map(biz.map((b) => [b.id, b.owner_user_id]));
+    return rows
+      .filter((r: any) => owner.has(r.business_id))
+      .map((r: any) => ({
+        address: r.address as string,
+        user_id: owner.get(r.business_id)!,
+        funded_tx_id: (r.funded_tx_id as string | null) ?? null,
+        business_wallet_id: r.wallet_id as string,
+      }));
+  }
 
   status() {
     const c = chainConfig();
@@ -229,13 +276,30 @@ export class ChainWalletService {
       const txs = await this.chain.transfersSince(a.id, cur.last_round);
       seen += txs.length;
       const addrs = [...new Set(txs.flatMap((t) => [t.receiver, t.sender]))];
-      const owners = addrs.length
-        ? await this.prisma.user_chain_wallets.findMany({
-            where: { address: { in: addrs }, network: c.network },
-            select: { address: true, user_id: true },
-          })
+      const owners: {
+        address: string;
+        user_id: string;
+        business_wallet_id?: string;
+      }[] = addrs.length
+        ? [
+            ...(await this.prisma.user_chain_wallets.findMany({
+              where: { address: { in: addrs }, network: c.network },
+              select: { address: true, user_id: true },
+            })),
+            // USDC only once the business account is opted in to it.
+            ...(await this.businessOwners(
+              c.network,
+              addrs,
+              a.symbol === 'USDC',
+            )),
+          ]
         : [];
       const byAddr = new Map(owners.map((o) => [o.address, o.user_id]));
+      const bizOf = new Map(
+        owners
+          .filter((o) => o.business_wallet_id)
+          .map((o) => [o.address, o.business_wallet_id!]),
+      );
       const internal = (addr: string) => addr === reserve || byAddr.has(addr);
       const rows = txs
         .filter(
@@ -251,6 +315,7 @@ export class ChainWalletService {
           asset_id: t.assetId,
           asset_symbol: a.symbol,
           user_id: byAddr.get(t.receiver)!,
+          business_wallet_id: bizOf.get(t.receiver) ?? null,
           address: t.receiver,
           sender: t.sender,
           amount_units: t.amount,
@@ -297,10 +362,18 @@ export class ChainWalletService {
       });
       return { seen: 0, recorded: 0 };
     }
-    const wallets = await this.prisma.user_chain_wallets.findMany({
-      where: { network, status: 'ready' },
-      select: { address: true, user_id: true, funded_tx_id: true },
-    });
+    const wallets: {
+      address: string;
+      user_id: string;
+      funded_tx_id: string | null;
+      business_wallet_id?: string;
+    }[] = [
+      ...(await this.prisma.user_chain_wallets.findMany({
+        where: { network, status: 'ready' },
+        select: { address: true, user_id: true, funded_tx_id: true },
+      })),
+      ...(await this.businessOwners(network)),
+    ];
     if (!wallets.length) {
       await this.prisma.chain_sync_state.update({
         where: { key },
@@ -335,6 +408,7 @@ export class ChainWalletService {
           asset_id: ALGO_ASSET_ID,
           asset_symbol: 'ALGO',
           user_id: w.user_id,
+          business_wallet_id: w.business_wallet_id ?? null,
           address: w.address,
           sender: t.sender,
           amount_units: t.amount,
@@ -421,7 +495,7 @@ export class ChainWalletService {
     const farm =
       Math.floor(usdc * rate.rate * 10 ** FARM_DECIMALS) / 10 ** FARM_DECIMALS;
     if (!(farm > 0)) return false;
-    return this.prisma.$transaction(async (tx) => {
+    const ok = await this.prisma.$transaction(async (tx) => {
       const claim = await tx.chain_deposits.updateMany({
         where: { id: d.id, status: { in: ['detected', 'pending_rate'] } },
         data: {
@@ -434,10 +508,19 @@ export class ChainWalletService {
         },
       });
       if (!claim.count) return false; // someone else credited it
-      const w = await tx.wallets.findFirst({
-        where: { user_id: d.user_id, is_active: true },
-      });
-      if (!w) throw new BadRequestException('User wallet not found');
+      const w = d.business_wallet_id
+        ? await tx.wallets.findFirst({
+            where: { id: d.business_wallet_id, wallet_type: 'merchant' },
+          })
+        : await tx.wallets.findFirst({
+            where: { user_id: d.user_id, is_active: true },
+          });
+      if (!w)
+        throw new BadRequestException(
+          d.business_wallet_id
+            ? 'Business wallet not found'
+            : 'User wallet not found',
+        );
       await tx.wallets.update({
         where: { id: w.id },
         data: { balance: { increment: farm } },
@@ -459,6 +542,7 @@ export class ChainWalletService {
           metadata: {
             chain_deposit_id: d.id,
             tx_id: d.tx_id,
+            ...(d.business_wallet_id ? { business_wallet: true } : {}),
             asset: d.asset_symbol,
             chain_settled: isFarm,
             rate: rate.rate,
@@ -498,6 +582,31 @@ export class ChainWalletService {
       });
       return true;
     });
+    if (ok && d.business_wallet_id) {
+      const amt = isFarm
+        ? `${usdc} FARM`
+        : `${usdc} ${d.asset_symbol} (${farm} FARM)`;
+      // Best effort: a failed notification never undoes the credit.
+      await this.notifications
+        ?.createInApp(d.user_id, {
+          type: 'deposit_completed',
+          title: 'Business payment received',
+          body: `Your business wallet received ${amt} on Algorand.`,
+          metadata: { chain_deposit_id: d.id, tx_id: d.tx_id },
+          entityId: d.id,
+        })
+        .catch((e: any) =>
+          this.log.warn(`Deposit notification failed: ${e?.message ?? e}`),
+        );
+      void this.notifications
+        ?.sendPush(
+          d.user_id,
+          'Business payment received',
+          `Your business wallet received ${amt} on Algorand.`,
+        )
+        ?.catch(() => undefined);
+    }
+    return ok;
   }
 
   // ---------------- FARM ledger -> chain reconciliation ----------------
@@ -543,18 +652,55 @@ export class ChainWalletService {
       take: Math.min(Math.max(limit, 1), 500),
       orderBy: { created_at: 'asc' },
     });
+    // Business (merchant) wallets are reconciled against their own account.
+    // farm_mirror_entries.user_id holds the business wallet id for those rows.
+    const bws = businessWalletEnabled()
+      ? await this.prisma.business_chain_wallets.findMany({
+          where: {
+            status: 'ready',
+            network: c.network,
+            ...(address ? { address } : {}),
+          },
+          take: Math.min(Math.max(limit, 1), 500),
+          orderBy: { created_at: 'asc' },
+        })
+      : [];
+    const targets: {
+      key: string;
+      address: string;
+      ledger: () => Promise<number>;
+    }[] = [
+      ...ws.map((w) => ({
+        key: w.user_id,
+        address: w.address,
+        ledger: async () => {
+          const agg = await this.prisma.wallets.aggregate({
+            where: { user_id: w.user_id, is_active: true, currency: 'FARM' },
+            _sum: { balance: true },
+          });
+          return Number(agg._sum.balance ?? 0);
+        },
+      })),
+      ...bws.map((b) => ({
+        key: b.wallet_id,
+        address: b.address,
+        ledger: async () => {
+          const bw = await this.prisma.wallets.findUnique({
+            where: { id: b.wallet_id },
+            select: { balance: true },
+          });
+          return Number(bw?.balance ?? 0);
+        },
+      })),
+    ];
     const run = await this.prisma.farm_reconciliation_runs.create({
       data: { network: c.network, mode, ledger_total: 0, started_by: adminId },
     });
     let ledgerTotal = 0;
     let chainTotal = 0;
     try {
-      for (const w of ws) {
-        const agg = await this.prisma.wallets.aggregate({
-          where: { user_id: w.user_id, is_active: true, currency: 'FARM' },
-          _sum: { balance: true },
-        });
-        const ledger = Number(agg._sum.balance ?? 0);
+      for (const w of targets) {
+        const ledger = await w.ledger();
         const ledgerUnits = BigInt(Math.floor(ledger * 10 ** FARM_DECIMALS));
         const chainUnits = await this.chain.assetBalance(w.address, farmAsa);
         const delta = ledgerUnits - chainUnits;
@@ -576,7 +722,7 @@ export class ChainWalletService {
               to: w.address,
               assetId: farmAsa,
               amount: delta,
-              note: `farm:mirror:${run.id}:${w.user_id}`,
+              note: `farm:mirror:${run.id}:${w.key}`,
             });
             txId = prep.txId;
             await prep.send();
@@ -588,7 +734,7 @@ export class ChainWalletService {
         await this.prisma.farm_mirror_entries.create({
           data: {
             run_id: run.id,
-            user_id: w.user_id,
+            user_id: w.key,
             address: w.address,
             ledger_bal: ledger,
             chain_bal: Number(chainUnits) / 10 ** FARM_DECIMALS,
@@ -604,7 +750,7 @@ export class ChainWalletService {
           status: 'done',
           ledger_total: ledgerTotal,
           chain_total: chainTotal,
-          wallets: ws.length,
+          wallets: targets.length,
           finished_at: new Date(),
         },
       });
@@ -626,7 +772,7 @@ export class ChainWalletService {
       data: {
         run_id: run.id,
         mode,
-        wallets: ws.length,
+        wallets: targets.length,
         ledger_total: ledgerTotal,
         chain_total: chainTotal,
       },

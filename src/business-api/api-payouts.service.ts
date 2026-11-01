@@ -9,6 +9,12 @@ import { PrismaService } from '../database/prisma.service';
 import { WithdrawService } from '../withdraw/withdraw.service';
 import { BusinessWebhooksService } from '../business-ops/business-webhooks.service';
 import { ApiPayoutDto } from './business-api.dto';
+import {
+  businessWalletEnabled,
+  internalMove,
+  personalWalletOf,
+  settlementWalletFor,
+} from '../business-ops/business-wallet';
 
 export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_\-:.]{8,255}$/;
 
@@ -136,6 +142,37 @@ export class ApiPayoutsService {
       record = existing;
     }
 
+    // BUSINESS_WALLET_ENABLED: the payout is funded from the business wallet.
+    // The withdrawal pipeline debits the owner's personal wallet, so first move
+    // the amount business -> personal (free), and move it back if the
+    // withdrawal is rejected before any money leaves.
+    let funded: { bizId: string; personalId: string } | null = null;
+    if (businessWalletEnabled()) {
+      const biz = await settlementWalletFor(this.prisma, {
+        businessId: ctx.businessId,
+      });
+      const me = await personalWalletOf(this.prisma, ctx.ownerUserId);
+      if (biz?.wallet_type === 'merchant' && me) {
+        try {
+          await internalMove(this.prisma, {
+            fromId: biz.id,
+            toId: me.id,
+            amount: Number(dto.amount),
+            kind: 'business_payout_funding',
+            description: 'Business payout funding',
+            metadata: { business_id: ctx.businessId, payout_record: record.id },
+          });
+        } catch {
+          await this.prisma.business_api_payouts.update({
+            where: { id: record.id },
+            data: { status: 'failed', error: 'Insufficient business balance' },
+          });
+          throw new BadRequestException('Insufficient business balance');
+        }
+        funded = { bizId: biz.id, personalId: me.id };
+      }
+    }
+
     try {
       const res: any = await this.withdraw.createWithdrawal(
         ctx.ownerUserId,
@@ -205,6 +242,17 @@ export class ApiPayoutsService {
       });
       return response;
     } catch (e: any) {
+      if (funded) {
+        // Withdrawal rejected: return the funding to the business wallet.
+        await internalMove(this.prisma, {
+          fromId: funded.personalId,
+          toId: funded.bizId,
+          amount: Number(dto.amount),
+          kind: 'business_payout_funding_reversal',
+          description: 'Business payout not sent; returned',
+          metadata: { business_id: ctx.businessId, payout_record: record.id },
+        }).catch(() => undefined);
+      }
       await this.prisma.business_api_payouts.update({
         where: { id: record.id },
         data: {

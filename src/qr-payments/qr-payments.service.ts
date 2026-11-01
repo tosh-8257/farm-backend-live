@@ -25,6 +25,8 @@ const DEFAULT_PUBLIC_PAY_SUCCESS_URL = `${PUBLIC_CHECKOUT_BASE_URL}/pay/success`
 
 type QrProvider = 'paystack' | 'ivorypay' | 'nowpayments';
 
+import { settlementWalletFor } from '../business-ops/business-wallet';
+
 @Injectable()
 export class QrPaymentsService {
   private readonly logger = new Logger(QrPaymentsService.name);
@@ -108,12 +110,10 @@ export class QrPaymentsService {
       );
     }
 
-    const wallet = await this.prisma.wallets.findFirst({
-      where: {
-        user_id: merchant.user_id,
-        is_active: true,
-        wallet_type: 'user',
-      },
+    // BUSINESS_WALLET_ENABLED: settle into the business wallet (legacy: owner's personal wallet).
+    const wallet = await settlementWalletFor(this.prisma, {
+      merchantId: merchant.id,
+      ownerUserId: merchant.user_id,
     });
     if (!wallet) {
       throw new BadRequestException(
@@ -693,9 +693,20 @@ export class QrPaymentsService {
 
       const wallet = await tx.wallets.findUnique({
         where: { id: walletId },
-        select: { id: true, user_id: true, balance: true },
+        select: { id: true, user_id: true, balance: true, wallet_type: true },
       });
-      if (!wallet?.user_id) {
+      // Business wallets have no user_id; notify the merchant owner instead.
+      const ownerId =
+        wallet?.user_id ??
+        (wallet?.wallet_type === 'merchant'
+          ? (
+              await tx.merchants.findUnique({
+                where: { id: merchantId },
+                select: { user_id: true },
+              })
+            )?.user_id
+          : null);
+      if (!wallet || !ownerId) {
         throw new BadRequestException('Merchant wallet is unavailable');
       }
       const balanceBefore = Number(wallet.balance ?? 0);
@@ -766,7 +777,7 @@ export class QrPaymentsService {
         saleFee,
       );
       return {
-        userId: wallet.user_id,
+        userId: ownerId,
         balance: Number(updatedWallet.balance),
         amount,
         saleFee,

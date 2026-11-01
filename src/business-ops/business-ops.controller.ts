@@ -60,6 +60,15 @@ export class BusinessOpsController {
   @Get('wallet') wallet(@CurrentUser() u: any) {
     return this.finance.wallet(u.id);
   }
+  /** Free move from the business wallet to the owner's personal wallet (BUSINESS_WALLET_ENABLED). */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('wallet/move-to-personal')
+  moveToPersonal(
+    @CurrentUser() u: any,
+    @Body() body: { amount: number; pin?: string; note?: string },
+  ) {
+    return this.finance.moveToPersonal(u.id, body);
+  }
   @Get('analytics') analytics(
     @CurrentUser() u: any,
     @Query('range') range = '30d',
