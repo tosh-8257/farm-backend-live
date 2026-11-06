@@ -94,8 +94,41 @@ export class BusinessOpsController {
   @Get('team') team_(@CurrentUser() u: any) {
     return this.team.list(u.id);
   }
+  @Get('team/invites')
+  @ApiOperation({ summary: 'Team invitations for my phone number' })
+  myInvites(@CurrentUser() u: any) {
+    return this.team.myInvites(u.id);
+  }
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('team/invites')
+  @ApiOperation({
+    summary: 'Invite a teammate by phone. They join only after accepting.',
+  })
+  invite(
+    @CurrentUser() u: any,
+    @Body() dto: { phone: string; role: string; pin: string },
+  ) {
+    return this.team.invite(u.id, dto);
+  }
+  @Post('team/invites/:id/accept')
+  @ApiOperation({ summary: 'Accept a team invitation sent to my phone' })
+  acceptInvite(@CurrentUser() u: any, @Param('id', UUID) id: string) {
+    return this.team.accept(u.id, id);
+  }
+  @Post('team/invites/:id/decline')
+  declineInvite(@CurrentUser() u: any, @Param('id', UUID) id: string) {
+    return this.team.decline(u.id, id);
+  }
+  @Post('team/invites/:id/revoke')
+  revokeInvite(@CurrentUser() u: any, @Param('id', UUID) id: string) {
+    return this.team.revokeInvite(u.id, id);
+  }
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('team')
+  @ApiOperation({
+    summary:
+      'Add by username or email, or invite when the identifier is a phone number',
+  })
   addMember(@CurrentUser() u: any, @Body() dto: AddMemberDto) {
     return this.team.add(u.id, dto);
   }

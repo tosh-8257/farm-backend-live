@@ -189,6 +189,18 @@ export class NowpaymentsWalletController {
   }
 
   @Permissions('payments:read')
+  @Get('crypto/limits')
+  limits() {
+    return this.depositService.getCryptoLimits();
+  }
+
+  @Permissions('payments:read')
+  @Get('crypto/limits/:currency')
+  limit(@Param('currency') currency: string) {
+    return this.depositService.getCryptoLimits(currency);
+  }
+
+  @Permissions('payments:read')
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Get('crypto/estimate')
   async estimate(

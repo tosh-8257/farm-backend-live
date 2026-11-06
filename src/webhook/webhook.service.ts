@@ -30,6 +30,7 @@ import { verifyPaystackSignature } from '../payments/utils/paystack-webhook.util
 import { resolveDepositCreditAmount } from '../deposit/deposit.utils';
 import { QrPaymentsService } from '../qr-payments/qr-payments.service';
 import { NowpaymentsService } from '../nowpayments/nowpayments.service';
+import { BusinessWebCheckoutService } from '../business-ops/business-web-checkout.service';
 
 @Injectable()
 export class WebhookService {
@@ -48,7 +49,25 @@ export class WebhookService {
     private readonly nowpayments: NowpaymentsService,
     @InjectQueue(QUEUES.WEBHOOKS) private readonly webhookQueue: Queue,
     @Optional() private readonly redisService?: RedisService,
+    @Optional() private readonly businessCheckout?: BusinessWebCheckoutService,
   ) {}
+
+  /** Invoice and payment-link checkouts update status after the provider webhook. */
+  private async applyBusinessDocument(
+    reference: string,
+    metadata: Record<string, unknown> | null | undefined,
+  ) {
+    const kind = metadata?.business_document;
+    if (kind !== 'invoice' && kind !== 'payment_link') return;
+    if (!this.businessCheckout) return;
+    try {
+      await this.businessCheckout.reconcile(reference);
+    } catch (error) {
+      this.logger.warn(
+        `Business ${kind} reconcile failed ref=${reference}: ${error instanceof Error ? error.message : 'error'}`,
+      );
+    }
+  }
 
   async handleNowpaymentsWebhook(payload: Record<string, any>) {
     const paymentId = String(payload.payment_id ?? '');
@@ -130,6 +149,10 @@ export class WebhookService {
           transaction.transaction_reference,
           'nowpayments',
           verified,
+        );
+        await this.applyBusinessDocument(
+          transaction.transaction_reference,
+          metadata,
         );
       } else {
         await this.depositService.finalizeSuccessfulDeposit(
@@ -2869,6 +2892,7 @@ export class WebhookService {
             'paystack',
             verifiedPayment,
           );
+          if (settled) await this.applyBusinessDocument(reference, qrMetadata);
           this.logger.log(
             `Paystack QR verification result ref=${reference} status=${settled ? 'success' : 'pending'}`,
           );
@@ -2896,6 +2920,7 @@ export class WebhookService {
               payload.data?.message ||
               'Payment failed or cancelled',
           );
+          await this.applyBusinessDocument(reference, qrMetadata);
         }
         return;
       }
@@ -3346,6 +3371,11 @@ export class WebhookService {
             'ivorypay',
             verifiedTransaction,
           );
+          if (settled)
+            await this.applyBusinessDocument(
+              resolvedReference,
+              transactionMetadata,
+            );
           this.logger.log(
             `Ivorypay QR verification result ref=${resolvedReference} status=${settled ? 'success' : 'pending'}`,
           );
@@ -3356,6 +3386,10 @@ export class WebhookService {
               payload.data?.message ||
               payload.message ||
               'Payment failed or cancelled',
+          );
+          await this.applyBusinessDocument(
+            resolvedReference,
+            transactionMetadata,
           );
         }
         return;

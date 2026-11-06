@@ -11,9 +11,11 @@ import { createBusinessChainAccount } from '../chain-wallet/business-chain.servi
  * BUSINESS_WALLET_ENABLED (default off):
  *  - off: unchanged legacy behaviour, every business receipt lands in the
  *    owner's personal wallet and the Business tab shows that wallet.
- *  - on: receipts (QR merchant payments, invoices, payment links, escrow
- *    releases, project-fund payments to the business) credit the business
- *    wallet; the Business tab, merchant dashboard, payouts and project returns
+ *  - on: receipts (invoices, payment links, escrow releases, project-fund
+ *    payments, and deposits to the business Algorand address) credit the
+ *    business wallet. Merchant QR sales credit the owner's personal balance
+ *    and are still recorded on the business. The Business tab, merchant
+ *    dashboard, payouts and project returns
  *    use it; the owner can "Move to personal" for free.
  *
  * The business wallet is a wallets row with wallet_type 'merchant' and
@@ -25,7 +27,6 @@ export const businessWalletEnabled = (
   env: Record<string, string | undefined> = process.env,
 ) => env.BUSINESS_WALLET_ENABLED === 'true';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = any;
 
 async function personal(db: Db, ownerUserId: string) {

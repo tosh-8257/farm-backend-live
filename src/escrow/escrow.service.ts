@@ -20,6 +20,10 @@ import {
 import { paginationParams, paginate } from '../common/utils/pagination.util';
 import { WebsocketGateway } from '../websocket/websocket.gateway';
 import { CloudinaryService } from '../common/cloudinary.service';
+import {
+  enqueueProjectEscrowRelease,
+  returnProjectEscrowFunds,
+} from '../project-marketplace/project-escrow-funds';
 
 /** Amount still locked in an escrow after milestone releases. */
 export function remainingAmount(e: { amount: any; released_amount?: any }) {
@@ -745,13 +749,18 @@ export class EscrowService {
           where: { id: escrow.id },
           data: { status: 'completed', released_at: new Date() },
         });
-      const buyerWallet = await tx.wallets.update({
-        where: { id: buyerWalletId },
-        data: {
-          locked_balance: { decrement: part },
-          balance: { decrement: part },
-        },
-      });
+      const projectFunded = Boolean(
+        (escrow as { project_id?: string }).project_id,
+      );
+      const buyerWallet = projectFunded
+        ? { balance: null }
+        : await tx.wallets.update({
+            where: { id: buyerWalletId },
+            data: {
+              locked_balance: { decrement: part },
+              balance: { decrement: part },
+            },
+          });
       const sellerWallet = await tx.wallets.update({
         where: { id: sellerWalletId },
         data: { balance: { increment: toSeller } },
@@ -804,13 +813,25 @@ export class EscrowService {
         completed,
         released_amount: Number(rows[0].released_amount),
         remaining: remainingAmount(rows[0]),
-        buyerBalance: Number(buyerWallet.balance),
+        buyerBalance:
+          buyerWallet.balance == null ? null : Number(buyerWallet.balance),
         sellerBalance: Number(sellerWallet.balance),
         transaction_reference: txn.transaction_reference,
+        projectFunded,
       };
     });
+    const projectId = (escrow as { project_id?: string }).project_id;
+    if (projectId && escrow.seller_id) {
+      await enqueueProjectEscrowRelease(this.prisma, {
+        projectId,
+        sellerUserId: escrow.seller_id,
+        amount: toSeller,
+        escrowId: escrow.id,
+      }).catch(() => undefined);
+    }
     try {
-      this.websocket.emitBalanceUpdate(buyerId, result.buyerBalance);
+      if (result.buyerBalance != null)
+        this.websocket.emitBalanceUpdate(buyerId, result.buyerBalance);
       this.websocket.emitBalanceUpdate(sellerId, result.sellerBalance);
     } catch {
       /* realtime is best effort */
@@ -907,14 +928,17 @@ export class EscrowService {
           transactionReference: null,
         } as any;
       }
-      // Deduct only the locked escrow amount from buyer's wallet. The creation fee was already charged at escrow creation.
-      const updatedBuyerWallet = await tx.wallets.update({
-        where: { id: escrow.buyer_wallet_id },
-        data: {
-          locked_balance: { decrement: amountLocked },
-          balance: { decrement: amountLocked },
-        },
-      });
+      // Project-funded escrows never locked the buyer's personal balance.
+      const projectFunded = Boolean(escrow.project_id);
+      const updatedBuyerWallet = projectFunded
+        ? { balance: null }
+        : await tx.wallets.update({
+            where: { id: escrow.buyer_wallet_id },
+            data: {
+              locked_balance: { decrement: amountLocked },
+              balance: { decrement: amountLocked },
+            },
+          });
       // Credit seller's wallet with amount minus release fee
       const updatedSellerWallet = await tx.wallets.update({
         where: { id: escrow.seller_wallet_id },
@@ -962,15 +986,27 @@ export class EscrowService {
         );
       }
       return {
-        buyerBalance: Number(updatedBuyerWallet.balance),
+        buyerBalance:
+          updatedBuyerWallet.balance == null
+            ? null
+            : Number(updatedBuyerWallet.balance),
         sellerBalance: Number(updatedSellerWallet.balance),
         transactionReference: txn.transaction_reference,
       };
     });
 
     if (!result.transactionReference) return;
+    if (escrow.project_id && escrow.seller_id) {
+      await enqueueProjectEscrowRelease(this.prisma, {
+        projectId: escrow.project_id,
+        sellerUserId: escrow.seller_id,
+        amount: amountToSeller,
+        escrowId: escrow.id,
+      }).catch(() => undefined);
+    }
     try {
-      this.websocket.emitBalanceUpdate(escrow.buyer_id, result.buyerBalance);
+      if (result.buyerBalance != null)
+        this.websocket.emitBalanceUpdate(escrow.buyer_id, result.buyerBalance);
       this.websocket.emitTransactionUpdate(escrow.buyer_id, {
         reference: result.transactionReference,
         status: 'SUCCESS',
@@ -1071,32 +1107,54 @@ export class EscrowService {
         select: { amount: true, released_amount: true },
       });
       amount = remainingAmount(fresh ?? escrow);
-      const updatedWallet = await tx.wallets.update({
-        where: { id: escrow.buyer_wallet_id },
-        data: { locked_balance: { decrement: amount } },
-      });
+      if (escrow.project_id && amount > 0) {
+        await returnProjectEscrowFunds(tx, {
+          projectId: escrow.project_id,
+          amount,
+          escrowId: escrow.id,
+          actor: resolution?.adminId,
+        });
+      }
+      const updatedWallet =
+        escrow.project_id || amount <= 0
+          ? { balance: null }
+          : await tx.wallets.update({
+              where: { id: escrow.buyer_wallet_id },
+              data: { locked_balance: { decrement: amount } },
+            });
       const transaction = await tx.transactions.create({
         data: {
           transaction_reference: generateTxReference(),
-          receiver_wallet_id: escrow.buyer_wallet_id,
+          receiver_wallet_id: escrow.project_id ? null : escrow.buyer_wallet_id,
           transaction_type: 'escrow_refund',
           status: 'completed',
           amount,
           fee: 0,
           net_amount: amount,
-          description: `Escrow refund: ${escrow.title}`,
-          metadata: { user_id: escrow.buyer_id, escrow_id: escrow.id },
+          description: escrow.project_id
+            ? `Escrow refund returned to project funds: ${escrow.title}`
+            : `Escrow refund: ${escrow.title}`,
+          metadata: {
+            user_id: escrow.buyer_id,
+            escrow_id: escrow.id,
+            ...(escrow.project_id
+              ? { project_id: escrow.project_id, returned_to: 'project_locked' }
+              : {}),
+          },
           processed_at: new Date(),
         },
       });
       return {
-        balance: Number(updatedWallet.balance),
+        balance:
+          updatedWallet.balance == null ? null : Number(updatedWallet.balance),
         transactionReference: transaction.transaction_reference,
+        projectFunded: Boolean(escrow.project_id),
       };
     });
 
     try {
-      this.websocket.emitBalanceUpdate(escrow.buyer_id, result.balance);
+      if (result.balance != null)
+        this.websocket.emitBalanceUpdate(escrow.buyer_id, result.balance);
       this.websocket.emitTransactionUpdate(escrow.buyer_id, {
         reference: result.transactionReference,
         status: 'SUCCESS',
@@ -1107,9 +1165,11 @@ export class EscrowService {
       );
     }
 
-    const resolutionText = resolution
-      ? `An admin resolved the dispute in your favor. ${amount} FARM was credited to your wallet. The escrow creation fee is non-refundable.${resolution.note ? ` Note: ${resolution.note}` : ''}`
-      : `Your escrow for ${escrow.title} has been refunded. ${amount} FARM was returned. The escrow creation fee is non-refundable.`;
+    const resolutionText = result.projectFunded
+      ? `Your escrow for ${escrow.title} was refunded. ${amount} FARM went back to the project's locked funds.`
+      : resolution
+        ? `An admin resolved the dispute in your favor. ${amount} FARM was credited to your wallet. The escrow creation fee is non-refundable.${resolution.note ? ` Note: ${resolution.note}` : ''}`
+        : `Your escrow for ${escrow.title} has been refunded. ${amount} FARM was returned. The escrow creation fee is non-refundable.`;
     const refundNotifications = [
       this.notificationsService.sendNotification(escrow.buyer_id, {
         type: 'escrow_refunded',

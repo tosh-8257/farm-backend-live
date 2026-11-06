@@ -11,7 +11,10 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
 import { BusinessAccessService } from '../business-ops/business-access.service';
 import { AuthService } from '../auth/auth.service';
-import { generateTxReference } from '../common/utils/reference.util';
+import {
+  generateEscrowReference,
+  generateTxReference,
+} from '../common/utils/reference.util';
 import { creditPlatformInTx } from '../fees/fee-defaults';
 import { TokenDistributionService } from '../tokenization/token-distribution.service';
 import { EDITABLE, RELEASABLE } from './project-rules';
@@ -256,7 +259,12 @@ export class ProjectFundsService {
         label: `Payment link: ${l.title}`,
         uses: l.use_count,
       };
-    } else throw new BadRequestException('Pay an invoice or a payment link');
+    } else if (dto.kind === 'escrow') {
+      return this.spendEscrow(userId, projectId, p, ownerId, dto);
+    } else
+      throw new BadRequestException(
+        'Pay an invoice, a payment link, or an escrow',
+      );
     const amount = r2(target.amount);
     if (!(amount > 0)) throw new BadRequestException('Nothing to pay');
     if (target.business_id === p.business_id)
@@ -456,6 +464,207 @@ export class ProjectFundsService {
         status: 'successful',
       },
       message: 'Paid from project funds',
+    };
+  }
+
+  /**
+   * Lock project funds into another business's escrow. The principal never
+   * lands in the project owner's wallet. A refund returns it to the locked
+   * balance (see returnProjectEscrowFunds).
+   */
+  private async spendEscrow(
+    userId: string,
+    projectId: string,
+    p: any,
+    ownerId: string | undefined,
+    dto: {
+      ref: string;
+      tag?: string;
+      note?: string;
+      idempotency_key?: string;
+    },
+  ) {
+    const be = await this.prisma.business_escrows.findUnique({
+      where: { id: dto.ref },
+      include: {
+        business: {
+          select: {
+            id: true,
+            owner_user_id: true,
+            status: true,
+            trading_name: true,
+            legal_name: true,
+          },
+        },
+      },
+    });
+    if (!be || be.status !== 'awaiting_payment')
+      throw new BadRequestException('Escrow is not awaiting payment');
+    if (be.buyer_user_id !== ownerId && be.buyer_user_id !== userId)
+      throw new ForbiddenException(
+        'Only the escrow buyer can pay it from project funds',
+      );
+    if (be.business_id === p.business_id)
+      throw new ForbiddenException(
+        'Project funds cannot pay your own business',
+      );
+    if (!be.business || be.business.status !== 'approved')
+      throw new BadRequestException(
+        'Recipient is not an approved FARM business',
+      );
+    if (
+      be.business.owner_user_id === ownerId ||
+      be.business.owner_user_id === userId
+    )
+      throw new ForbiddenException(
+        'Project funds cannot be paid to the project owner',
+      );
+    const amount = r2(n(be.amount));
+    if (!(amount > 0)) throw new BadRequestException('Nothing to pay');
+    const key = dto.idempotency_key
+      ? `c:${projectId}:${dto.idempotency_key}`
+      : `escrow:${be.id}`;
+    const prior = await this.prisma.project_spends.findUnique({
+      where: { idempotency_key: key },
+    });
+    if (prior)
+      return {
+        data: {
+          id: prior.id,
+          amount: n(prior.amount),
+          transaction_reference: prior.transaction_reference,
+          status: 'successful',
+        },
+        message: 'Already paid',
+      };
+    const sellerWallet = await settlementWalletFor(this.prisma, {
+      businessId: be.business_id,
+      ownerUserId: be.business.owner_user_id,
+    });
+    const buyerWallet = await this.prisma.wallets.findFirst({
+      where: {
+        user_id: be.buyer_user_id,
+        is_active: true,
+        wallet_type: 'user',
+      },
+    });
+    if (!sellerWallet || !buyerWallet)
+      throw new BadRequestException('Escrow wallets not found');
+    let out: any;
+    try {
+      out = await this.prisma.$transaction(async (tx) => {
+        await this.assertCaps(tx, projectId, amount);
+        const claimed = await tx.$executeRaw`
+          UPDATE investment_projects
+             SET released_amount = COALESCE(released_amount, 0) + ${amount}, updated_at = now()
+           WHERE id = ${projectId}::uuid
+             AND funds_paused = false
+             AND consolidation_fee_at IS NOT NULL
+             AND COALESCE(released_amount, 0) + ${amount}
+                 <= raised_amount - COALESCE(consolidation_fee, 0)`;
+        if (claimed !== 1)
+          throw new BadRequestException(
+            'Not enough project funds for this payment',
+          );
+        const locked = await tx.business_escrows.updateMany({
+          where: { id: be.id, status: 'awaiting_payment' },
+          data: { status: 'funded' },
+        });
+        if (!locked.count)
+          throw new BadRequestException('Escrow is no longer awaiting payment');
+        const contract = await tx.escrow_contracts.create({
+          data: {
+            reference_code: generateEscrowReference(),
+            buyer_id: be.buyer_user_id,
+            seller_id: be.business.owner_user_id,
+            buyer_wallet_id: buyerWallet.id,
+            seller_wallet_id: sellerWallet.id,
+            amount,
+            fee: 0,
+            title: be.title,
+            description: be.description,
+            status: 'active',
+            funded_at: new Date(),
+            project_id: projectId,
+          },
+        });
+        await tx.business_escrows.update({
+          where: { id: be.id },
+          data: { escrow_contract_id: contract.id },
+        });
+        const ref = generateTxReference();
+        const t = await tx.transactions.create({
+          data: {
+            transaction_reference: ref,
+            transaction_type: 'escrow_lock',
+            status: 'completed',
+            amount,
+            fee: 0,
+            net_amount: amount,
+            description: `Project funds locked in escrow: ${be.title}`,
+            metadata: {
+              project_id: projectId,
+              project_spend: true,
+              escrow_id: contract.id,
+              funding: 'project_locked',
+            },
+            processed_at: new Date(),
+          },
+        });
+        const sp = await tx.project_spends.create({
+          data: {
+            project_id: projectId,
+            target_kind: 'escrow',
+            target_id: contract.id,
+            recipient_business_id: be.business_id,
+            recipient_user_id: be.business.owner_user_id,
+            amount,
+            tag: dto.tag?.trim().slice(0, 120) || null,
+            note: dto.note?.trim().slice(0, 500) || null,
+            idempotency_key: key,
+            transaction_id: t.id,
+            transaction_reference: ref,
+            created_by: userId,
+          },
+        });
+        await tx.project_funds_audit.create({
+          data: {
+            project_id: projectId,
+            action: 'spend',
+            actor: userId,
+            amount,
+            detail: {
+              spend_id: sp.id,
+              kind: 'escrow',
+              escrow_id: contract.id,
+              ref,
+            },
+          },
+        });
+        return { spend: sp, contract };
+      });
+    } catch (e: any) {
+      if (e?.code === 'P2002')
+        throw new BadRequestException('This payment was already made');
+      throw e;
+    }
+    const recipientName =
+      be.business.trading_name ?? be.business.legal_name ?? 'business';
+    await this.alert(
+      'Project escrow funded',
+      `${p.project_name}: ${amount} FARM held in escrow for ${recipientName}`,
+      { project_id: projectId, spend_id: out.spend.id },
+    );
+    return {
+      data: {
+        id: out.spend.id,
+        amount,
+        escrow_contract_id: out.contract.id,
+        transaction_reference: out.spend.transaction_reference,
+        recipient: recipientName,
+        status: 'successful',
+      },
+      message: 'Paid into escrow from project funds',
     };
   }
 
@@ -971,11 +1180,20 @@ export class ProjectFundsService {
         at: s.created_at,
         type: 'spent',
         amount: n(s.amount),
-        label: `Paid ${names.get(s.recipient_business_id) ?? 'business'} (${s.target_kind === 'invoice' ? 'invoice' : 'payment link'})`,
+        label: `Paid ${names.get(s.recipient_business_id) ?? 'business'} (${s.target_kind === 'invoice' ? 'invoice' : s.target_kind === 'escrow' ? 'escrow' : 'payment link'})`,
         tag: s.tag,
         note: s.note,
         reference: s.transaction_reference,
       });
+    for (const s of spends)
+      if (s.refunded_at)
+        events.push({
+          at: s.refunded_at,
+          type: 'escrow_refund',
+          amount: n(s.refunded_amount),
+          label: `Escrow refund returned to project funds`,
+          reference: s.transaction_reference,
+        });
     for (const r of returns)
       events.push({
         at: r.created_at,

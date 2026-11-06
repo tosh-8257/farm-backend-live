@@ -541,7 +541,7 @@ describe('QrPaymentsService settlement', () => {
     );
   });
 
-  it('credits both the business and personal wallets for a QR sale', async () => {
+  it('credits only the owner personal wallet for a QR sale', async () => {
     const transaction = {
       id: 'transaction-business-qr',
       amount: 7.5,
@@ -623,22 +623,12 @@ describe('QrPaymentsService settlement', () => {
     ).resolves.toBe(true);
 
     expect(tx.wallets.update).toHaveBeenNthCalledWith(1, {
-      where: { id: 'business-wallet' },
-      data: { balance: { increment: 7.425 } },
-      select: { balance: true },
-    });
-    expect(tx.wallets.update).toHaveBeenNthCalledWith(2, {
       where: { id: 'personal-wallet' },
       data: { balance: { increment: 7.425 } },
       select: { balance: true },
     });
-    expect(tx.ledger_entries.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          wallet_id: 'business-wallet',
-          amount: 7.425,
-        }),
-      }),
+    expect(tx.wallets.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'business-wallet' } }),
     );
     expect(tx.ledger_entries.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -649,6 +639,87 @@ describe('QrPaymentsService settlement', () => {
       }),
     );
     expect(websocket.emitBalanceUpdate).toHaveBeenCalledWith('owner-1', 32.425);
+  });
+
+  it('credits the business wallet for an invoice or payment-link checkout', async () => {
+    const transaction = {
+      id: 'transaction-invoice',
+      amount: 7.5,
+      receiver_wallet_id: 'business-wallet',
+      transaction_type: 'merchant_payment',
+      metadata: {
+        provider: 'paystack',
+        amount_fiat: 100,
+        business_document: 'invoice',
+      },
+      qr_payments: [{ merchant_id: 'merchant-1' }],
+    };
+    const tx = {
+      transactions: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      wallets: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'business-wallet',
+          user_id: null,
+          wallet_type: 'merchant',
+          balance: 12.5,
+        }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'personal-wallet',
+          user_id: 'owner-1',
+          wallet_type: 'user',
+          balance: 25,
+        }),
+        update: jest.fn().mockResolvedValue({ balance: 19.925 }),
+      },
+      ledger_entries: { create: jest.fn().mockResolvedValue({}) },
+      qr_payments: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      merchants: {
+        findUnique: jest.fn().mockResolvedValue({ user_id: 'owner-1' }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      users: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'superadmin-1',
+          wallets: [{ id: 'superadmin-wallet-1', balance: 100 }],
+        }),
+      },
+      businesses: { findFirst: jest.fn() },
+      business_payments: { create: jest.fn() },
+    };
+    const prisma: any = {
+      transactions: { findUnique: jest.fn().mockResolvedValue(transaction) },
+      $transaction: jest.fn((callback) => callback(tx)),
+    };
+    const service = new QrPaymentsService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {
+        invalidateWallet: jest.fn().mockResolvedValue(undefined),
+        cacheDelete: jest.fn().mockResolvedValue(undefined),
+        cacheInvalidatePattern: jest.fn().mockResolvedValue(undefined),
+      } as any,
+      { emitBalanceUpdate: jest.fn(), emitTransactionUpdate: jest.fn() } as any,
+      { sendNotification: jest.fn().mockResolvedValue(undefined) } as any,
+      {
+        createForTransaction: jest.fn().mockResolvedValue({ id: 'receipt-1' }),
+        enqueuePdfAndEmail: jest.fn(),
+      } as any,
+    );
+    await expect(
+      service.complete('QR-INV', 'paystack', {
+        status: 'success',
+        reference: 'QR-INV',
+        amount: 10_000,
+      }),
+    ).resolves.toBe(true);
+    expect(tx.wallets.update).toHaveBeenNthCalledWith(1, {
+      where: { id: 'business-wallet' },
+      data: { balance: { increment: 7.425 } },
+      select: { balance: true },
+    });
+    expect(tx.business_payments.create).not.toHaveBeenCalled();
   });
 
   it('settles an IvoryPay QR payment from its documented verified token and crypto amount', async () => {

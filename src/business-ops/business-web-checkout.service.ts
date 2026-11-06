@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { randomUUID } from 'crypto';
@@ -12,6 +13,7 @@ import { CurrencyConversionService } from '../currency/currency-conversion.servi
 import { QrPaymentsService } from '../qr-payments/qr-payments.service';
 import { BusinessCommerceService } from './business-commerce.service';
 import { BusinessWebhooksService } from './business-webhooks.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const PAYABLE = ['sent', 'pending', 'overdue'];
 /** How long a started web checkout holds a link use or an invoice. */
@@ -22,8 +24,9 @@ export type WebMethod = (typeof WEB_METHODS)[number];
 /**
  * Hosted web checkout for payers without the FARM app. The payer pays in KES
  * through the existing guest merchant checkout (QrPaymentsService), which
- * credits the business owner's wallet through the existing deposit pipeline.
- * This service only records and reconciles; it never moves wallet funds itself.
+ * credits the business settlement wallet (not a merchant QR personal credit).
+ * This service records the invoice or link and notifies the owner; the wallet
+ * credit happens in QrPaymentsService.complete.
  */
 @Injectable()
 export class BusinessWebCheckoutService {
@@ -35,6 +38,7 @@ export class BusinessWebCheckoutService {
     private readonly qr: QrPaymentsService,
     private readonly currency: CurrencyConversionService,
     private readonly webhooks: BusinessWebhooksService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /** Details for the public pay page. */
@@ -118,12 +122,17 @@ export class BusinessWebCheckoutService {
     let url: string | undefined;
     let reference: string | undefined;
     try {
-      const res: any = await this.qr.initialize({
-        merchantId: biz.merchant_id,
-        amount: amountKes,
-        method: method as WebMethod,
-        guestEmail: email?.trim() || undefined,
-      });
+      const res: any = await this.qr.initialize(
+        {
+          merchantId: biz.merchant_id,
+          amount: amountKes,
+          method: method as WebMethod,
+          guestEmail: email?.trim() || undefined,
+        },
+        {
+          businessDocument: kind === 'link' ? 'payment_link' : 'invoice',
+        },
+      );
       url = res?.data?.authorization_url ?? res?.authorization_url;
       reference = res?.data?.reference ?? res?.reference;
       if (!url || !reference)
@@ -321,6 +330,7 @@ export class BusinessWebCheckoutService {
         transaction_reference: reference,
       });
     }
+    await this.notifyOwner(c, reference);
     this.webhooks.emit(c.business_id, 'live', 'payment.succeeded', {
       source: c.source,
       source_id: c.source_id,
@@ -329,6 +339,36 @@ export class BusinessWebCheckoutService {
       transaction_reference: reference,
     });
     return 'completed';
+  }
+
+  private async notifyOwner(c: any, reference: string) {
+    if (!this.notifications) return;
+    const biz = await this.prisma.businesses.findUnique({
+      where: { id: c.business_id },
+      select: { owner_user_id: true },
+    });
+    if (!biz?.owner_user_id) return;
+    const invoice = c.source === 'invoice';
+    await this.notifications
+      .sendNotification(biz.owner_user_id, {
+        type: 'merchant',
+        entityId: reference,
+        title: invoice ? 'Invoice paid' : 'Payment link paid',
+        body: `You received ${Number(c.amount)} FARM from a ${invoice ? 'invoice' : 'payment link'}.`,
+        metadata: {
+          event: invoice ? 'invoice.paid' : 'payment_link.paid',
+          source: c.source,
+          source_id: c.source_id,
+          amount: Number(c.amount),
+          transaction_reference: reference,
+          channel: 'web',
+        },
+      })
+      .catch((error) => {
+        this.logger.warn(
+          `owner notify ${reference}: ${error instanceof Error ? error.message : 'error'}`,
+        );
+      });
   }
 
   /** Applies a completed web payment to its link/invoice. Returns false when it cannot. */

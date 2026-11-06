@@ -94,19 +94,43 @@ export class BusinessFinanceService {
 
   private async chainAccount(walletId: string) {
     if (!chainConfig().wallets.enabled) return null;
-    const c = await this.prisma.business_chain_wallets.findUnique({
+    const row = await this.prisma.business_chain_wallets.findUnique({
       where: { wallet_id: walletId },
-      select: { address: true, network: true, status: true },
+      select: {
+        address: true,
+        network: true,
+        status: true,
+        usdc_opt_in_tx: true,
+      },
     });
-    return c
-      ? {
-          address: c.address,
-          network: c.network,
-          status: c.status,
-          ready: c.status === 'ready',
-          farm_asa_id: process.env.FARM_ASA_ID ?? null,
-        }
-      : null;
+    if (!row) return null;
+    const usdcReady = row.status === 'ready' && !!row.usdc_opt_in_tx;
+    return {
+      address: row.address,
+      network: row.network,
+      status: row.status,
+      ready: row.status === 'ready',
+      farm_asa_id: process.env.FARM_ASA_ID ?? null,
+      usdc_asa_id: process.env.USDC_ASA_ID ?? null,
+      // Same shape as a personal chain wallet. Never "in development".
+      usdc_ready: usdcReady,
+      usdc_status: usdcReady ? 'ready' : 'pending',
+      in_development: false,
+      assets: [
+        {
+          symbol: 'FARM',
+          asa_id: process.env.FARM_ASA_ID ?? null,
+          status: row.status === 'ready' ? 'ready' : 'pending',
+          in_development: false,
+        },
+        {
+          symbol: 'USDC',
+          asa_id: process.env.USDC_ASA_ID ?? null,
+          status: usdcReady ? 'ready' : 'pending',
+          in_development: false,
+        },
+      ],
+    };
   }
 
   /**

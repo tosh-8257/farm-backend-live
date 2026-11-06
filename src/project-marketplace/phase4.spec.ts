@@ -416,6 +416,20 @@ describe('Phase 4 – milestone releases (admin only, backend logic)', () => {
     };
     return { svc: new ProjectReviewService(prisma), prisma, tx };
   }
+  it('does not pay the owner when the restricted funds flow is on', async () => {
+    const prev = process.env.PROJECT_FUNDS_FLOW_ENABLED;
+    process.env.PROJECT_FUNDS_FLOW_ENABLED = 'true';
+    try {
+      const { svc, tx } = relMocks(base);
+      await expect(svc.releaseMilestone('admin', PID, 'm1')).rejects.toThrow(
+        'owner wallet',
+      );
+      expect(tx.wallets.update).not.toHaveBeenCalled();
+    } finally {
+      if (prev === undefined) delete process.env.PROJECT_FUNDS_FLOW_ENABLED;
+      else process.env.PROJECT_FUNDS_FLOW_ENABLED = prev;
+    }
+  });
   it('releases the milestone pro-rata to what was raised, with a real transaction + ledger entry', async () => {
     const { svc, tx } = relMocks(base);
     const r = await svc.releaseMilestone('admin', PID, 'm1');

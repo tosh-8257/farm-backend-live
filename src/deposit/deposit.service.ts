@@ -23,6 +23,11 @@ import {
   personalWalletOf,
   settlementWalletFor,
 } from '../business-ops/business-wallet';
+import {
+  assertCoinAmount,
+  configuredCoinLimits,
+  resolveCoinBounds,
+} from '../crypto/coin-limits';
 
 const MIN_NOWPAYMENTS_CRYPTO_DEPOSIT_USD = 2;
 const STALE_NOWPAYMENTS_DEPOSIT_MS = 24 * 60 * 60 * 1000;
@@ -63,7 +68,13 @@ export class DepositService {
     }
     const minimum =
       await this.nowpayments.getMinimumPaymentAmount(normalizedCurrency);
-    return { data: minimum };
+    const bounds = resolveCoinBounds(normalizedCurrency, minimum.minimumAmount);
+    return { data: { ...minimum, ...bounds } };
+  }
+
+  async getCryptoLimits(currency?: string) {
+    if (!currency) return { data: { coins: configuredCoinLimits() } };
+    return this.getNowpaymentsCryptoMinimum(currency);
   }
 
   async getNowpaymentsCryptoEstimate(
@@ -146,11 +157,7 @@ export class DepositService {
       'usd',
       payCurrency,
     );
-    if (estimatedCryptoAmount < minimum.minimumAmount) {
-      throw new BadRequestException(
-        `NOWPayments requires at least ${minimum.minimumAmount} ${payCurrency.toUpperCase()}. Increase the USD deposit amount for this currency.`,
-      );
-    }
+    assertCoinAmount(payCurrency, estimatedCryptoAmount, minimum.minimumAmount);
 
     const wallet = await this.prisma.wallets.findFirst({
       where: { user_id: userId, is_active: true, wallet_type: 'user' },

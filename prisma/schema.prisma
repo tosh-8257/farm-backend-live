@@ -134,6 +134,8 @@ model escrow_contracts {
   resolution_note                                    String?
   /// V2 Phase 2b: running total released milestone-by-milestone.
   released_amount                                    Decimal           @default(0) @db.Decimal(30, 8)
+  /// Set when the escrow principal was taken from a project's locked funds.
+  project_id                                         String?           @db.Uuid
   created_at                                         DateTime?         @default(now()) @db.Timestamp(6)
   updated_at                                         DateTime?         @default(now()) @db.Timestamp(6)
   users_escrow_contracts_arbiter_idTousers           users?            @relation("escrow_contracts_arbiter_idTousers", fields: [arbiter_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -715,6 +717,7 @@ model users {
   businesses_reviewed             businesses[]                @relation("businesses_reviewer")
   business_verifications_reviewed business_verifications[]    @relation("business_verifications_reviewer")
   business_memberships            business_members[]          @relation("business_members_user")
+  business_invites_received       business_invites[]          @relation("business_invites_user")
   email_verification_tokens       email_verification_tokens[]
 
   @@index([email], map: "idx_users_email")
@@ -1188,6 +1191,7 @@ model businesses {
   documents               business_documents[]
   verifications           business_verifications[]
   members                 business_members[]
+  invites                 business_invites[]
   customers               business_customers[]
   invoices                business_invoices[]
   payment_links           business_payment_links[]
@@ -1293,6 +1297,27 @@ model business_members {
 
   @@unique([business_id, user_id], map: "uq_business_members_business_user")
   @@index([user_id], map: "idx_business_members_user")
+}
+
+/// Pending team invitation. Membership starts only after the invitee accepts.
+model business_invites {
+  id          String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  business_id String               @db.Uuid
+  phone       String               @db.VarChar(20)
+  role        business_member_role
+  status      String               @default("pending") @db.VarChar(20)
+  invited_by  String?              @db.Uuid
+  user_id     String?              @db.Uuid
+  expires_at  DateTime             @db.Timestamptz(6)
+  accepted_at DateTime?            @db.Timestamptz(6)
+  created_at  DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  business    businesses           @relation(fields: [business_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user        users?               @relation("business_invites_user", fields: [user_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([business_id, status], map: "idx_business_invites_business")
+  @@index([phone, status], map: "idx_business_invites_phone")
+  @@index([user_id], map: "idx_business_invites_user")
 }
 
 model business_customers {
@@ -2333,8 +2358,11 @@ model project_spends {
   idempotency_key       String   @unique @db.VarChar(120)
   transaction_id        String?  @db.Uuid
   transaction_reference String?  @db.VarChar(100)
-  created_by            String   @db.Uuid
-  created_at            DateTime @default(now()) @db.Timestamptz(6)
+  created_by            String    @db.Uuid
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  /// Principal returned to the project's locked balance (escrow refund).
+  refunded_amount       Decimal   @default(0) @db.Decimal(30, 8)
+  refunded_at           DateTime? @db.Timestamptz(6)
 
   @@index([project_id, created_at])
 }

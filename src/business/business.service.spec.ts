@@ -159,6 +159,22 @@ describe('BusinessService', () => {
   });
 
   describe('submit', () => {
+    const prev = process.env.MANUAL_KYB_ENABLED;
+    beforeEach(() => {
+      process.env.MANUAL_KYB_ENABLED = 'true';
+    });
+    afterEach(() => {
+      if (prev === undefined) delete process.env.MANUAL_KYB_ENABLED;
+      else process.env.MANUAL_KYB_ENABLED = prev;
+    });
+
+    it('refuses manual submit when Didit is the only KYB path', async () => {
+      delete process.env.MANUAL_KYB_ENABLED;
+      await expect(svc.submit('user-1')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
     it('lists missing requirements', async () => {
       prisma.businesses.findUnique.mockResolvedValue(
         completeBusiness({ legal_name: '', documents: [], persons: [] }),
@@ -209,7 +225,9 @@ describe('BusinessService', () => {
   });
 
   describe('adminReview', () => {
+    const prev = process.env.MANUAL_KYB_ENABLED;
     beforeEach(() => {
+      process.env.MANUAL_KYB_ENABLED = 'true';
       prisma.businesses.findUnique.mockResolvedValue({
         id: 'biz-1',
         owner_user_id: 'user-1',
@@ -221,6 +239,10 @@ describe('BusinessService', () => {
         id: 'biz-1',
         status: 'approved',
       });
+    });
+    afterEach(() => {
+      if (prev === undefined) delete process.env.MANUAL_KYB_ENABLED;
+      else process.env.MANUAL_KYB_ENABLED = prev;
     });
 
     it('approves only on an explicit admin decision', async () => {

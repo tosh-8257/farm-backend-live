@@ -192,10 +192,12 @@ describe('DiditService KYB webhooks', () => {
     timestamp: Math.floor(Date.now() / 1000),
   });
 
-  it('stores a signed KYB session decision without approving the business', async () => {
+  it('approves the business when Didit KYB is approved', async () => {
     const { tx, service } = webhookHarness({
       id: BUSINESS_ID,
       didit_kyb_session_id: 'kyb-session-1',
+      status: 'draft',
+      owner_user_id: USER_ID,
     });
     const payload = {
       ...base(),
@@ -211,8 +213,8 @@ describe('DiditService KYB webhooks', () => {
     const data = tx.businesses.update.mock.calls[0][0].data;
     expect(data.didit_kyb_status).toBe('approved');
     expect(data.didit_kyb_result.decision).toEqual(payload.decision);
-    expect(data.status).toBeUndefined();
-    expect(data.approved_at).toBeUndefined();
+    expect(data.status).toBe('approved');
+    expect(data.approved_at).toBeInstanceOf(Date);
     expect(tx.users.updateMany).not.toHaveBeenCalled();
   });
 

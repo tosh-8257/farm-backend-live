@@ -10,6 +10,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { WebsocketGateway } from '../websocket/websocket.gateway';
 import { CacheService } from '../common/cache/cache.service';
 import { v4 as uuidv4 } from 'uuid';
+import { assertCoinAmount } from '../crypto/coin-limits';
 
 @Injectable()
 export class IvorypayDepositService {
@@ -76,6 +77,10 @@ export class IvorypayDepositService {
       throw new BadRequestException(
         'The selected crypto token has no enabled IvoryPay network',
       );
+    }
+    const coinAmount = Number(dto.amount_crypto);
+    if (Number.isFinite(coinAmount) && coinAmount > 0) {
+      assertCoinAmount(requestedToken, coinAmount);
     }
 
     const reference = uuidv4();

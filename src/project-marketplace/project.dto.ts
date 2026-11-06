@@ -145,8 +145,8 @@ export class ReturnDepositDto {
   @IsString() @Length(4, 12) pin!: string;
 }
 export class ProjectSpendDto {
-  @IsIn(['invoice', 'payment_link']) kind!: string;
-  /** Invoice number or payment link code. */
+  @IsIn(['invoice', 'payment_link', 'escrow']) kind!: string;
+  /** Invoice number, payment link code, or business escrow id. */
   @IsString() @Length(1, 100) ref!: string;
   @IsString() @Length(4, 12) pin!: string;
   /** Optional deliverable tag, e.g. "Greenhouse kit". */

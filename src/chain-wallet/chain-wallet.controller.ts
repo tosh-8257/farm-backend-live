@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -67,6 +67,20 @@ export class AdminChainController {
   }
   @Get('reconcile') runs() {
     return this.svc.runs();
+  }
+  @Post('deposits/credit')
+  creditDeposit(
+    @CurrentUser() u: any,
+    @Body()
+    body: { tx_id?: string; asset?: string; network?: string; dry?: boolean },
+  ) {
+    return this.svc.creditDepositByTx({
+      txId: body?.tx_id ?? '',
+      asset: body?.asset,
+      network: body?.network,
+      dry: body?.dry === true,
+      actorId: u.id,
+    });
   }
   @Post('reconcile') reconcile(
     @CurrentUser() u: any,

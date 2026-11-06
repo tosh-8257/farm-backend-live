@@ -25,7 +25,7 @@ h1{font-size:20px;margin:0 0 4px}.muted{color:#666}.amt{font-size:32px;font-weig
 
 /** Public hosted pay pages: /api/pay/l/:code and /api/pay/i/:invoiceNumber */
 @ApiExcludeController()
-@Controller({ path: 'pay', version: VERSION_NEUTRAL })
+@Controller({ path: 'pay', version: [VERSION_NEUTRAL, '1'] })
 export class BusinessWebCheckoutController {
   constructor(private readonly svc: BusinessWebCheckoutService) {}
 
@@ -107,6 +107,24 @@ export class BusinessWebCheckoutController {
         amount_kes,
         payable: t.payable,
         state: t.state,
+        amount_locked: true,
+        farm_wallet: {
+          method: 'POST',
+          path:
+            k === 'link'
+              ? `/api/v1/pay/links/${encodeURIComponent(t.ref)}`
+              : `/api/v1/pay/invoices/${encodeURIComponent(t.ref)}`,
+          auth: 'Bearer',
+          body: { pin: '<transaction PIN>' },
+        },
+        provider_checkout: {
+          method: 'POST',
+          path: `/api/v1/pay/data/${kind}/${encodeURIComponent(t.ref)}/checkout`,
+          body: {
+            method: 'mpesa | card | bank | crypto',
+            email: '<payer email>',
+          },
+        },
       },
     };
   }

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Optional,
   Logger,
@@ -9,6 +10,7 @@ import { PrismaService } from '../database/prisma.service';
 import { generateTxReference } from '../common/utils/reference.util';
 import { paginate, paginationParams } from '../common/utils/pagination.util';
 import { ADMIN_TRANSITIONS, RELEASABLE } from './project-rules';
+import { fundsFlowEnabled } from './funds-flow-rules';
 import { presentProject } from './marketplace.service';
 import { FeesService } from '../fees/fees.service';
 import { TokenizationService } from '../tokenization/tokenization.service';
@@ -455,6 +457,14 @@ export class ProjectReviewService {
     milestoneId: string,
     notes?: string,
   ) {
+    // Restricted spend: raised FARM stays locked and can only leave through
+    // an invoice, payment link, or escrow. A milestone release would credit
+    // the owner and let them cash out.
+    if (fundsFlowEnabled()) {
+      throw new ForbiddenException(
+        'Project funds cannot be released to the owner wallet. Pay an invoice, payment link, or escrow from the locked balance.',
+      );
+    }
     const p = await this.prisma.investment_projects.findUnique({
       where: { id: projectId },
       include: {

@@ -26,6 +26,11 @@ const explorer = (net: string) =>
   `https://${net === 'testnet' ? 'testnet.' : ''}explorer.perawallet.app`;
 
 import { businessWalletEnabled } from '../business-ops/business-wallet';
+import {
+  evaluateReconcileSend,
+  ReconcileMode,
+  WalletDelta,
+} from '../ops/reconcile-policy';
 
 @Injectable()
 export class ChainWalletService {
@@ -777,6 +782,343 @@ export class ChainWalletService {
         chain_total: chainTotal,
       },
     };
+  }
+
+  /**
+   * Credit one confirmed indexer transaction into the normal deposit path.
+   * Idempotent on network + tx id + asset. Dry runs write nothing.
+   */
+  async creditDepositByTx(input: {
+    txId: string;
+    asset?: string;
+    network?: string;
+    dry: boolean;
+    actorId: string | null;
+  }) {
+    const looked = await this.chain.lookupTransaction(input.txId.trim());
+    if (!looked?.confirmedRound) {
+      throw new BadRequestException(
+        'Transaction was not found as confirmed on the indexer',
+      );
+    }
+    const cfg = chainConfig();
+    const network = (input.network || cfg.network).trim();
+    const farmAsa = process.env.FARM_ASA_ID
+      ? BigInt(process.env.FARM_ASA_ID)
+      : null;
+    const usdcAsa = process.env.USDC_ASA_ID
+      ? BigInt(process.env.USDC_ASA_ID)
+      : null;
+    let symbol: string;
+    let decimals: number;
+    if (looked.assetId === 0n) {
+      symbol = 'ALGO';
+      decimals = ALGO_DECIMALS;
+    } else if (farmAsa !== null && looked.assetId === farmAsa) {
+      symbol = 'FARM';
+      decimals = FARM_DECIMALS;
+    } else if (usdcAsa !== null && looked.assetId === usdcAsa) {
+      symbol = 'USDC';
+      decimals = USDC_DECIMALS;
+    } else {
+      throw new BadRequestException(
+        'That transaction is not ALGO, FARM, or USDC',
+      );
+    }
+    if (input.asset && input.asset.toUpperCase() !== symbol) {
+      throw new BadRequestException(
+        'The transaction asset does not match the requested coin',
+      );
+    }
+    if (
+      process.env.FARM_RESERVE_ADDRESS &&
+      looked.receiver === process.env.FARM_RESERVE_ADDRESS
+    ) {
+      throw new BadRequestException(
+        'Recipient is not a FARM-managed user or business address',
+      );
+    }
+    const userWallet = await this.prisma.user_chain_wallets.findUnique({
+      where: { address: looked.receiver },
+    });
+    const businessWallet = await this.prisma.business_chain_wallets.findUnique({
+      where: { address: looked.receiver },
+    });
+    const managed =
+      (userWallet && userWallet.network === network && userWallet) ||
+      (businessWallet &&
+        businessWallet.network === network &&
+        businessWallet) ||
+      null;
+    if (!managed) {
+      throw new BadRequestException(
+        'Recipient is not a FARM-managed user or business address',
+      );
+    }
+    let userId = userWallet?.user_id ?? '';
+    let businessWalletId: string | null = null;
+    if (businessWallet && businessWallet.network === network) {
+      const biz = await this.prisma.businesses.findUnique({
+        where: { id: businessWallet.business_id },
+        select: { owner_user_id: true },
+      });
+      if (!biz) {
+        throw new BadRequestException('Business wallet owner was not found');
+      }
+      userId = biz.owner_user_id;
+      businessWalletId = businessWallet.wallet_id;
+    }
+    const where = {
+      network_tx_id_asset_id: {
+        network,
+        tx_id: looked.txId,
+        asset_id: looked.assetId,
+      },
+    };
+    const existing = await this.prisma.chain_deposits.findUnique({ where });
+    const preview = {
+      tx_id: looked.txId,
+      network,
+      asset: symbol,
+      amount_units: looked.amount.toString(),
+      already_credited: existing?.status === 'credited',
+    };
+    if (input.dry || existing?.status === 'credited') {
+      await this.auditChain(input.actorId, existing?.id ?? null, {
+        ...preview,
+        mode: input.dry ? 'dry' : 'already',
+      });
+      return {
+        data: {
+          ...preview,
+          mode: input.dry ? 'dry' : 'already',
+          credited: false,
+        },
+      };
+    }
+    let row = existing;
+    if (!row) {
+      try {
+        row = await this.prisma.chain_deposits.create({
+          data: {
+            network,
+            tx_id: looked.txId,
+            asset_id: looked.assetId,
+            asset_symbol: symbol,
+            user_id: userId,
+            business_wallet_id: businessWalletId,
+            address: looked.receiver,
+            sender: looked.sender,
+            amount_units: looked.amount,
+            decimals,
+            confirmed_round: looked.confirmedRound,
+            status: 'detected',
+          },
+        });
+      } catch (error: any) {
+        if (error?.code !== 'P2002') throw error;
+        row = await this.prisma.chain_deposits.findUnique({ where });
+      }
+    }
+    if (!row) throw new BadRequestException('Deposit could not be recorded');
+    const rate =
+      symbol === 'FARM'
+        ? { rate: 1, source: 'peg:1 FARM = 1 KSh', at: new Date() }
+        : symbol === 'USDC'
+          ? cfg.conversion.enabled
+            ? await this.rates.usdcKes()
+            : null
+          : cfg.algoConversion.enabled
+            ? await this.rates.algoKes()
+            : null;
+    if (!rate) {
+      await this.prisma.chain_deposits.update({
+        where: { id: row.id },
+        data: { status: 'pending_rate' },
+      });
+      await this.auditChain(input.actorId, row.id, {
+        ...preview,
+        mode: 'send',
+        credited: false,
+        waiting_rate: true,
+      });
+      return { data: { ...preview, mode: 'send', credited: false } };
+    }
+    const credited = await this.credit(
+      row.status === 'pending_rate' ? { ...row, status: 'pending_rate' } : row,
+      rate,
+    );
+    await this.auditChain(input.actorId, row.id, {
+      ...preview,
+      mode: 'send',
+      credited: Boolean(credited),
+    });
+    return { data: { ...preview, mode: 'send', credited: Boolean(credited) } };
+  }
+
+  /** Dry-run of the FARM ledger mirror. Does not send and does not record a run. */
+  async previewReconcile(
+    limit = 100,
+    address?: string,
+  ): Promise<WalletDelta[]> {
+    const c = chainConfig();
+    if (!c.wallets.enabled) {
+      throw new ServiceUnavailableException('Chain wallets are disabled');
+    }
+    const farmAsa = BigInt(process.env.FARM_ASA_ID!);
+    const ws = await this.prisma.user_chain_wallets.findMany({
+      where: {
+        status: 'ready',
+        network: c.network,
+        ...(address ? { address } : {}),
+      },
+      take: Math.min(Math.max(limit, 1), 500),
+      orderBy: { created_at: 'asc' },
+    });
+    const bws = businessWalletEnabled()
+      ? await this.prisma.business_chain_wallets.findMany({
+          where: {
+            status: 'ready',
+            network: c.network,
+            ...(address ? { address } : {}),
+          },
+          take: Math.min(Math.max(limit, 1), 500),
+          orderBy: { created_at: 'asc' },
+        })
+      : [];
+    const rows: WalletDelta[] = [];
+    for (const w of ws) {
+      const agg = await this.prisma.wallets.aggregate({
+        where: { user_id: w.user_id, is_active: true, currency: 'FARM' },
+        _sum: { balance: true },
+      });
+      const ledger = Number(agg._sum.balance ?? 0);
+      const chain =
+        Number(await this.chain.assetBalance(w.address, farmAsa)) /
+        10 ** FARM_DECIMALS;
+      rows.push({
+        key: w.user_id,
+        address: w.address,
+        deltaFarm: Math.round((ledger - chain) * 100) / 100,
+      });
+    }
+    for (const b of bws) {
+      const bw = await this.prisma.wallets.findUnique({
+        where: { id: b.wallet_id },
+        select: { balance: true },
+      });
+      const ledger = Number(bw?.balance ?? 0);
+      const chain =
+        Number(await this.chain.assetBalance(b.address, farmAsa)) /
+        10 ** FARM_DECIMALS;
+      rows.push({
+        key: b.wallet_id,
+        address: b.address,
+        deltaFarm: Math.round((ledger - chain) * 100) / 100,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * Operator reconcile. Dry by default. Send refuses unless expectTotal matches
+   * the dry-run total and per-wallet / batch caps hold. Prints nothing itself.
+   */
+  async operatorReconcile(input: {
+    mode: ReconcileMode;
+    limit: number;
+    expectTotal?: number;
+    actorId: string | null;
+  }) {
+    const rows = await this.previewReconcile(input.limit);
+    const decision = evaluateReconcileSend({
+      mode: input.mode,
+      rows,
+      expectTotal: input.expectTotal,
+    });
+    if (!decision.ok) {
+      await this.auditChain(input.actorId, null, {
+        action: 'chain.reconcile_refused',
+        mode: input.mode,
+        total: decision.total,
+        reason: decision.reason,
+      });
+      throw new BadRequestException(decision.reason);
+    }
+    if (input.mode === 'dry') {
+      await this.auditChain(input.actorId, null, {
+        action: 'chain.reconcile_dry',
+        total: decision.total,
+        wallets: rows.length,
+      });
+      return {
+        mode: 'dry' as const,
+        wallets: rows.length,
+        positive_total: decision.total,
+        tx_ids: [] as string[],
+      };
+    }
+    const again = await this.previewReconcile(input.limit);
+    const second = evaluateReconcileSend({
+      mode: 'send',
+      rows: again,
+      expectTotal: input.expectTotal,
+    });
+    if (!second.ok) {
+      throw new BadRequestException(second.reason);
+    }
+    const run = await this.reconcile(
+      input.actorId ?? 'operator',
+      'execute',
+      input.limit,
+    );
+    const entries = await this.prisma.farm_mirror_entries.findMany({
+      where: { run_id: run.data.run_id, tx_id: { not: null } },
+      select: { tx_id: true },
+    });
+    const txIds = entries
+      .map((e) => e.tx_id)
+      .filter((id): id is string => Boolean(id));
+    await this.auditChain(input.actorId, null, {
+      action: 'chain.reconcile_send',
+      total: second.total,
+      run_id: run.data.run_id,
+      tx_ids: txIds,
+    });
+    return {
+      mode: 'send' as const,
+      wallets: run.data.wallets,
+      positive_total: second.total,
+      tx_ids: txIds,
+    };
+  }
+
+  private async auditChain(
+    actorId: string | null,
+    entityId: string | null,
+    values: Record<string, unknown>,
+  ) {
+    const action =
+      typeof values.action === 'string'
+        ? values.action
+        : typeof values.mode === 'string'
+          ? values.mode
+          : 'chain.operator';
+    try {
+      await this.prisma.audit_logs.create({
+        data: {
+          user_id: actorId,
+          action,
+          entity_type: 'chain_deposit',
+          entity_id: entityId,
+          new_values: values as never,
+        },
+      });
+    } catch (error) {
+      this.log.warn(
+        `chain audit failed: ${error instanceof Error ? error.message : 'error'}`,
+      );
+    }
   }
 
   async runs() {

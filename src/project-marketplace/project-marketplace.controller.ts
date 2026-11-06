@@ -141,7 +141,8 @@ export class BusinessProjectsController {
   @Post(':id/spend')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
-    summary: 'Pay an invoice or payment link from project funds',
+    summary:
+      'Pay another FARM business invoice, payment link, or escrow from locked project funds',
   })
   spendFunds(
     @CurrentUser() u: any,

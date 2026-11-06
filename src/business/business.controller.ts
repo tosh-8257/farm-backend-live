@@ -59,7 +59,8 @@ export class BusinessController {
   @Post('submit')
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @ApiOperation({
-    summary: 'Submit business for verification (moves to Under Review)',
+    summary:
+      'Manual KYB submit. Disabled unless MANUAL_KYB_ENABLED=true. Use Didit KYB.',
   })
   submit(@CurrentUser() u: any) {
     return this.svc.submit(u.id);
@@ -86,8 +87,7 @@ export class AdminBusinessController {
 
   @Post(':id/review')
   @ApiOperation({
-    summary:
-      'Approve, request more information, or reject (manual decision only)',
+    summary: 'Manual KYB decision. Disabled unless MANUAL_KYB_ENABLED=true.',
   })
   review(
     @CurrentUser() u: any,

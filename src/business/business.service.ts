@@ -69,12 +69,24 @@ export class BusinessService {
         submitted_at: true,
         reviewed_at: true,
         approved_at: true,
+        didit_kyb_status: true,
+        didit_kyb_session_id: true,
       },
     });
     return {
       data: business
-        ? { ...business, is_active: business.status === 'approved' }
-        : { status: 'not_started', is_active: false },
+        ? {
+            ...business,
+            is_active: business.status === 'approved',
+            verification_method: 'didit',
+            manual_kyb_enabled: process.env.MANUAL_KYB_ENABLED === 'true',
+          }
+        : {
+            status: 'not_started',
+            is_active: false,
+            verification_method: 'didit',
+            manual_kyb_enabled: process.env.MANUAL_KYB_ENABLED === 'true',
+          },
     };
   }
 
@@ -203,6 +215,11 @@ export class BusinessService {
   }
 
   async submit(userId: string) {
+    if (process.env.MANUAL_KYB_ENABLED !== 'true') {
+      throw new ForbiddenException(
+        'Manual business verification is disabled. Start the Didit KYB workflow.',
+      );
+    }
     const business = await this.prisma.businesses.findUnique({
       where: { owner_user_id: userId },
       include: DETAIL_INCLUDE,
@@ -330,6 +347,11 @@ export class BusinessService {
   }
 
   async adminReview(adminId: string, id: string, dto: ReviewBusinessDto) {
+    if (process.env.MANUAL_KYB_ENABLED !== 'true') {
+      throw new ForbiddenException(
+        'Manual KYB decisions are disabled. Business status follows the Didit workflow.',
+      );
+    }
     const business = await this.prisma.businesses.findUnique({ where: { id } });
     if (!business) throw new NotFoundException('Business not found.');
     if (business.status !== 'under_review') {

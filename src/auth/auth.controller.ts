@@ -43,6 +43,7 @@ import { ResetPinDto } from './dto/reset-pin.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { BiometricReauthDto } from './dto/biometric-reauth.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { CreateAdminDto } from './dto/create-admin.dto';
@@ -439,6 +440,38 @@ export class AuthController {
   async honeypotConsole(@Req() req: Request) {
     return this.authService.triggerHoneypot(
       '/api/v1/auth/admin/console',
+      req.ip || '',
+      req.headers['user-agent'] || '',
+    );
+  }
+
+  /**
+   * ================= SESSION =================
+   * Long-lived refresh + device-bound biometric renewal. SMS stays the path
+   * for a new device or when biometrics are not enrolled.
+   */
+  @Public()
+  @Get('session/config')
+  @ApiOperation({
+    summary: 'Session lifetimes and whether biometric re-auth is available',
+  })
+  sessionConfig() {
+    return this.authService.sessionConfig();
+  }
+
+  @Public()
+  @Post('session/biometric')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({
+    default: { limit: 8, ttl: 60_000 },
+  })
+  @ApiOperation({
+    summary:
+      'Renew access and refresh tokens with a device-bound biometric proof (no SMS)',
+  })
+  biometricReauth(@Body() dto: BiometricReauthDto, @Req() req: Request) {
+    return this.authService.biometricReauth(
+      dto,
       req.ip || '',
       req.headers['user-agent'] || '',
     );

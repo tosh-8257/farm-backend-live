@@ -265,8 +265,9 @@ export class DiditService {
 
   /**
    * Starts a Didit KYB (business verification) session for the caller's
-   * business. vendor_data is the business record id. The result is advisory
-   * only: the business is still approved manually by an admin.
+   * business. vendor_data is the business record id. An approved Didit
+   * decision approves the business. Manual review stays off unless
+   * MANUAL_KYB_ENABLED=true.
    */
   async createKybSession(userId: string) {
     const workflowId = this.config.get<string>('DIDIT_KYB_WORKFLOW_ID')?.trim();
@@ -615,7 +616,12 @@ export class DiditService {
 
           const business = await transaction.businesses.findUnique({
             where: { id: vendorData },
-            select: { id: true, didit_kyb_session_id: true },
+            select: {
+              id: true,
+              didit_kyb_session_id: true,
+              status: true,
+              owner_user_id: true,
+            },
           });
           if (!business) {
             this.logger.warn(`Didit KYB event ${eventId}: unknown business`);
@@ -680,10 +686,50 @@ export class DiditService {
             }
           }
 
+          if (
+            process.env.MANUAL_KYB_ENABLED !== 'true' &&
+            typeof data.didit_kyb_status === 'string'
+          ) {
+            const kyb = data.didit_kyb_status;
+            if (kyb === 'approved' && business.status !== 'approved') {
+              data.status = 'approved';
+              data.approved_at = new Date();
+            } else if (
+              (kyb === 'declined' || kyb === 'rejected') &&
+              business.status !== 'approved'
+            ) {
+              data.status = 'rejected';
+            } else if (
+              kyb === 'in_review' &&
+              (business.status === 'draft' ||
+                business.status === 'more_information_required')
+            ) {
+              data.status = 'under_review';
+            }
+          }
+
           await transaction.businesses.update({
             where: { id: business.id },
             data,
           });
+          if (
+            data.status === 'approved' &&
+            business.owner_user_id &&
+            transaction.notifications?.create
+          ) {
+            await transaction.notifications.create({
+              data: {
+                user_id: business.owner_user_id,
+                type: 'merchant',
+                title: 'Business verified',
+                body: 'Your business passed Didit verification and is now approved.',
+                metadata: {
+                  kind: 'business_verification',
+                  business_id: business.id,
+                },
+              },
+            });
+          }
         },
         { maxWait: 1_000, timeout: 4_000 },
       );

@@ -81,7 +81,7 @@ describe('QrService merchant QR validation', () => {
   });
 
   describe('QrService merchant QR settlement fees', () => {
-    it('credits both the business and personal wallets when business wallets are enabled', async () => {
+    it('credits only the owner personal wallet for a QR sale', async () => {
       const previousFlag = process.env.BUSINESS_WALLET_ENABLED;
       process.env.BUSINESS_WALLET_ENABLED = 'true';
       try {
@@ -124,6 +124,7 @@ describe('QrService merchant QR validation', () => {
           },
           merchants: { update: jest.fn().mockResolvedValue({}) },
           qr_payments: { create: jest.fn().mockResolvedValue({}) },
+          business_payments: { create: jest.fn().mockResolvedValue({}) },
           ledger_entries: { createMany: jest.fn().mockResolvedValue({}) },
         };
         const prisma: any = {
@@ -179,19 +180,22 @@ describe('QrService merchant QR validation', () => {
         });
 
         expect(tx.wallets.update).toHaveBeenNthCalledWith(2, {
-          where: { id: businessWallet.id },
-          data: { balance: { increment: 99 } },
-        });
-        expect(tx.wallets.update).toHaveBeenNthCalledWith(3, {
           where: { id: personalWallet.id },
           data: { balance: { increment: 99 } },
         });
+        expect(tx.wallets.update).not.toHaveBeenCalledWith({
+          where: { id: businessWallet.id },
+          data: { balance: { increment: 99 } },
+        });
+        expect(tx.business_payments.create).toHaveBeenCalledWith({
+          data: expect.objectContaining({
+            business_id: 'business-1',
+            source: 'qr',
+            channel: 'qr',
+          }),
+        });
         expect(tx.ledger_entries.createMany).toHaveBeenCalledWith({
           data: expect.arrayContaining([
-            expect.objectContaining({
-              wallet_id: businessWallet.id,
-              amount: 99,
-            }),
             expect.objectContaining({
               wallet_id: personalWallet.id,
               amount: 99,
@@ -243,6 +247,7 @@ describe('QrService merchant QR validation', () => {
       };
       const prisma: any = {
         merchants: { findUnique: jest.fn().mockResolvedValue(merchant) },
+        businesses: { findFirst: jest.fn().mockResolvedValue(null) },
         wallets: {
           findFirst: jest
             .fn()

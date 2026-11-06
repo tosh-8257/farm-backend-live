@@ -98,7 +98,10 @@ export class QrPaymentsService {
     return { data: { tokens, options } };
   }
 
-  async initialize(dto: CreateQrPaymentDto) {
+  async initialize(
+    dto: CreateQrPaymentDto,
+    opts?: { businessDocument?: 'invoice' | 'payment_link' },
+  ) {
     const merchant = await this.prisma.merchants.findUnique({
       where: { id: dto.merchantId },
       include: {
@@ -113,11 +116,15 @@ export class QrPaymentsService {
       );
     }
 
-    // BUSINESS_WALLET_ENABLED: settle into the business wallet (legacy: owner's personal wallet).
-    const wallet = await settlementWalletFor(this.prisma, {
-      merchantId: merchant.id,
-      ownerUserId: merchant.user_id,
-    });
+    // Merchant QR credits the owner's personal wallet. An invoice or payment
+    // link uses the business settlement wallet (the business wallet when
+    // BUSINESS_WALLET_ENABLED is on).
+    const wallet = opts?.businessDocument
+      ? await settlementWalletFor(this.prisma, {
+          merchantId: merchant.id,
+          ownerUserId: merchant.user_id,
+        })
+      : await personalWalletOf(this.prisma, merchant.user_id);
     if (!wallet) {
       throw new BadRequestException(
         'This merchant does not have an active wallet',
@@ -191,6 +198,9 @@ export class QrPaymentsService {
       guest_email: email,
       platform_fee_type: 'merchant_sale',
       platform_fee_percent: 1,
+      ...(opts?.businessDocument
+        ? { business_document: opts.businessDocument }
+        : {}),
       ...(amountUsd !== undefined ? { amount_usd: amountUsd } : {}),
       ...(crypto ? { requested_crypto: crypto } : {}),
     };
@@ -721,43 +731,54 @@ export class QrPaymentsService {
           'Merchant personal wallet is unavailable',
         );
       }
-      const balanceBefore = Number(wallet.balance ?? 0);
-      const updatedWallet = await tx.wallets.update({
-        where: { id: wallet.id },
+      const meta =
+        (transaction.metadata as Record<string, unknown> | null) ?? {};
+      const forBusinessDocument =
+        meta.business_document === 'invoice' ||
+        meta.business_document === 'payment_link';
+      // QR sales credit personal. Invoice and payment-link checkouts credit
+      // the wallet stored when the checkout started (the business wallet).
+      const creditWallet = forBusinessDocument ? wallet : personalWallet;
+      const balanceBefore = Number(creditWallet.balance ?? 0);
+      const updatedPersonalWallet = await tx.wallets.update({
+        where: { id: creditWallet.id },
         data: { balance: { increment: merchantNet } },
         select: { balance: true },
       });
-      let updatedPersonalWallet = updatedWallet;
-      if (personalWallet.id !== wallet.id) {
-        const personalBalanceBefore = Number(personalWallet.balance ?? 0);
-        updatedPersonalWallet = await tx.wallets.update({
-          where: { id: personalWallet.id },
-          data: { balance: { increment: merchantNet } },
-          select: { balance: true },
-        });
-        await tx.ledger_entries.create({
-          data: {
-            transaction_id: transaction.id,
-            wallet_id: personalWallet.id,
-            entry_type: 'credit',
-            amount: merchantNet,
-            balance_before: personalBalanceBefore,
-            balance_after: Number(updatedPersonalWallet.balance),
-            description: 'Public QR payment after 1% platform sales fee',
-          },
-        });
-      }
       await tx.ledger_entries.create({
         data: {
           transaction_id: transaction.id,
-          wallet_id: wallet.id,
+          wallet_id: creditWallet.id,
           entry_type: 'credit',
           amount: merchantNet,
           balance_before: balanceBefore,
-          balance_after: Number(updatedWallet.balance),
+          balance_after: Number(updatedPersonalWallet.balance),
           description: 'Public QR payment after 1% platform sales fee',
         },
       });
+      if (
+        !forBusinessDocument &&
+        typeof tx.businesses?.findFirst === 'function'
+      ) {
+        const business = await tx.businesses.findFirst({
+          where: { merchant_id: merchantId },
+          select: { id: true },
+        });
+        if (business && typeof tx.business_payments?.create === 'function') {
+          await tx.business_payments.create({
+            data: {
+              business_id: business.id,
+              source: 'qr',
+              source_id: merchantId,
+              payer_user_id: ownerId,
+              amount: merchantNet,
+              transaction_reference:
+                transaction.transaction_reference ?? reference,
+              channel: 'qr',
+            },
+          });
+        }
+      }
       const superadmin = await tx.users.findFirst({
         where: { role: 'super_admin', is_deleted: false },
         include: { wallets: { where: { is_active: true }, take: 1 } },
@@ -880,8 +901,15 @@ export class QrPaymentsService {
       .sendNotification(settled.userId, {
         type: 'merchant',
         entityId: reference,
-        title: 'Merchant payment successful',
-        body: `Your business received ${settled.merchantNet} FARM after the 1% sales fee from a QR payment.`,
+        title:
+          (transaction.metadata as { business_document?: string } | null)
+            ?.business_document === 'invoice'
+            ? 'Invoice paid'
+            : (transaction.metadata as { business_document?: string } | null)
+                  ?.business_document === 'payment_link'
+              ? 'Payment link paid'
+              : 'Merchant payment successful',
+        body: `Your business received ${settled.merchantNet} FARM after the 1% sales fee.`,
         metadata: {
           event: 'merchant_payment_received',
           merchant_id: settled.merchantId,

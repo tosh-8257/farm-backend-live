@@ -298,6 +298,53 @@ export class AlgorandWalletClient {
     }
   }
 
+  /**
+   * Confirmed indexer transaction. Returns null when the id is unknown or
+   * the transfer is not a payment / asset transfer.
+   */
+  async lookupTransaction(txId: string): Promise<{
+    txId: string;
+    confirmedRound: bigint | null;
+    sender: string;
+    receiver: string;
+    amount: bigint;
+    assetId: bigint;
+  } | null> {
+    if (!/^[A-Z2-7]{52}$/.test(txId)) return null;
+    try {
+      const r = await this.indexer().lookupTransactionByID(txId).do();
+      const t = r.transaction;
+      if (!t?.id || !t.sender) return null;
+      const round = t.confirmedRound != null ? BigInt(t.confirmedRound) : null;
+      if (t.paymentTransaction?.receiver) {
+        return {
+          txId: t.id,
+          confirmedRound: round,
+          sender: t.sender,
+          receiver: t.paymentTransaction.receiver,
+          amount: BigInt(t.paymentTransaction.amount ?? 0),
+          assetId: 0n,
+        };
+      }
+      const ax = t.assetTransferTransaction;
+      if (ax?.receiver) {
+        const asset =
+          ax.assetId ?? (ax as { 'asset-id'?: bigint | number })['asset-id'];
+        return {
+          txId: t.id,
+          confirmedRound: round,
+          sender: t.sender,
+          receiver: ax.receiver,
+          amount: BigInt(ax.amount ?? 0),
+          assetId: BigInt(asset ?? 0),
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 'confirmed' | 'pending' | 'unknown' for a txId we may have sent before. */
   async txStatus(txId: string): Promise<'confirmed' | 'pending' | 'unknown'> {
     try {

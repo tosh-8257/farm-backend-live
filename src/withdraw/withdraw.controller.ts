@@ -99,6 +99,13 @@ export class WithdrawController {
     return this.withdrawService.getNowpaymentsCryptoMinimum();
   }
 
+  @Permissions('withdraw:read')
+  @UseGuards(JwtAuthGuard)
+  @Get('crypto/limits/:currency')
+  async cryptoLimit(@Param('currency') currency: string) {
+    return this.withdrawService.getCryptoCoinLimit(currency);
+  }
+
   @Permissions('withdraw:write')
   @UseGuards(JwtAuthGuard, KycGuard)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })

@@ -21,6 +21,7 @@ import { PrismaService } from '../database/prisma.service';
 import { WebhookSignatureGuard } from '../common/guards/webhook-signature.guard';
 import { QUEUES } from '../common/constants';
 import { QrPaymentsModule } from '../qr-payments/qr-payments.module';
+import { BusinessOpsModule } from '../business-ops/business-ops.module';
 import { NowpaymentsModule } from '../nowpayments/nowpayments.module';
 
 @Module({
@@ -33,6 +34,7 @@ import { NowpaymentsModule } from '../nowpayments/nowpayments.module';
     forwardRef(() => IvorypayModule),
     NotificationsModule,
     QrPaymentsModule,
+    forwardRef(() => BusinessOpsModule),
     NowpaymentsModule,
     ScheduleModule.forRoot(),
     BullModule.registerQueue({

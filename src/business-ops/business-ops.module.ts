@@ -47,6 +47,7 @@ import {
     BusinessCommerceService,
     BusinessEscrowService,
     BusinessWebhooksService,
+    BusinessWebCheckoutService,
   ],
 })
 export class BusinessOpsModule {}

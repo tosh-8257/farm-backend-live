@@ -22,6 +22,7 @@ import { WebsocketGateway } from '../websocket/websocket.gateway';
 import { PaystackTransferInitiationError } from '../paystack/paystack.service';
 import { Cron } from '@nestjs/schedule';
 import { NowpaymentsService } from '../nowpayments/nowpayments.service';
+import { assertCoinAmount, resolveCoinBounds } from '../crypto/coin-limits';
 
 const MIN_NOWPAYMENTS_CRYPTO_WITHDRAWAL_USD = 2;
 
@@ -301,6 +302,18 @@ export class WithdrawService {
     };
   }
 
+  async getCryptoCoinLimit(currency: string) {
+    const code = currency.trim().toLowerCase();
+    const supported = await this.nowpayments.getAvailableCurrencies();
+    if (!supported.includes(code)) {
+      throw new BadRequestException(
+        'The selected cryptocurrency is not currently available',
+      );
+    }
+    const minimum = await this.nowpayments.getPayoutMinimum(code);
+    return { data: resolveCoinBounds(code, minimum) };
+  }
+
   async createNowpaymentsCryptoWithdrawal(
     userId: string,
     dto: CreateWithdrawDto,
@@ -397,11 +410,7 @@ export class WithdrawService {
       currency,
     );
     const minimumPayout = await this.nowpayments.getPayoutMinimum(currency);
-    if (payoutAmount < minimumPayout) {
-      throw new BadRequestException(
-        `NOWPayments minimum payout is ${minimumPayout} ${currency.toUpperCase()}`,
-      );
-    }
+    assertCoinAmount(currency, payoutAmount, minimumPayout);
     const networkFee = await this.nowpayments.estimatePayoutFee(
       currency,
       payoutAmount,

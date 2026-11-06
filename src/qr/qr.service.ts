@@ -23,10 +23,7 @@ import {
   PUBLIC_CHECKOUT_BASE_URL,
 } from './merchant-checkout.constants';
 
-import {
-  personalWalletOf,
-  settlementWalletFor,
-} from '../business-ops/business-wallet';
+import { personalWalletOf } from '../business-ops/business-wallet';
 
 @Injectable()
 export class QrService {
@@ -322,19 +319,18 @@ export class QrService {
     const customerWallet = await this.prisma.wallets.findFirst({
       where: { user_id: customerId, wallet_type: 'user', is_active: true },
     });
-    // BUSINESS_WALLET_ENABLED: settle into the business wallet (legacy: owner's personal wallet).
-    const merchantWallet = await settlementWalletFor(this.prisma, {
-      merchantId: merchant.id,
-      ownerUserId: merchant.user_id,
+    // QR sales credit the owner's personal balance. Business-address deposits
+    // and invoices keep using the business wallet.
+    const merchantPersonalWallet = await personalWalletOf(
+      this.prisma,
+      merchant.user_id,
+    );
+    const business = await this.prisma.businesses.findFirst({
+      where: { merchant_id: merchant.id },
+      select: { id: true },
     });
-    if (!customerWallet || !merchantWallet)
+    if (!customerWallet || !merchantPersonalWallet)
       throw new NotFoundException('Wallet not found');
-    const merchantPersonalWallet =
-      merchantWallet.wallet_type === 'merchant'
-        ? await personalWalletOf(this.prisma, merchant.user_id)
-        : merchantWallet;
-    if (!merchantPersonalWallet)
-      throw new NotFoundException('Merchant personal wallet not found');
 
     const customerFee =
       dto.amount * (Number(merchant.transaction_fee_percent || 0) / 100);
@@ -354,7 +350,7 @@ export class QrService {
         data: {
           transaction_reference: reference,
           sender_wallet_id: customerWallet.id,
-          receiver_wallet_id: merchantWallet.id,
+          receiver_wallet_id: merchantPersonalWallet.id,
           transaction_type: 'merchant_payment',
           status: 'completed',
           amount: dto.amount,
@@ -369,6 +365,8 @@ export class QrService {
             platform_fee_percent: 1,
             platform_fee: saleFee,
             customer_fee: customerFee,
+            settlement: 'personal',
+            ...(business ? { business_id: business.id } : {}),
           },
           processed_at: new Date(),
         },
@@ -377,19 +375,23 @@ export class QrService {
         where: { id: customerWallet.id },
         data: { balance: { decrement: totalOut } },
       });
-      const merchantCreditWallets =
-        merchantPersonalWallet.id === merchantWallet.id
-          ? [merchantWallet]
-          : [merchantWallet, merchantPersonalWallet];
-      let updatedPersonalBalance = Number(merchantPersonalWallet.balance ?? 0);
-      for (const wallet of merchantCreditWallets) {
-        const updatedWallet = await tx.wallets.update({
-          where: { id: wallet.id },
-          data: { balance: { increment: merchantNet } },
+      const updatedPersonal = await tx.wallets.update({
+        where: { id: merchantPersonalWallet.id },
+        data: { balance: { increment: merchantNet } },
+      });
+      const updatedPersonalBalance = Number(updatedPersonal.balance);
+      if (business) {
+        await tx.business_payments.create({
+          data: {
+            business_id: business.id,
+            source: 'qr',
+            source_id: merchant.id,
+            payer_user_id: customerId,
+            amount: merchantNet,
+            transaction_reference: reference,
+            channel: 'qr',
+          },
         });
-        if (wallet.id === merchantPersonalWallet.id) {
-          updatedPersonalBalance = Number(updatedWallet.balance);
-        }
       }
       const superadmin = await tx.users.findFirst({
         where: { role: 'super_admin', is_deleted: false },
@@ -443,13 +445,13 @@ export class QrService {
             amount: totalOut,
             description: `QR payment to ${merchant.business_name}`,
           },
-          ...merchantCreditWallets.map((wallet) => ({
+          {
             transaction_id: txn.id,
-            wallet_id: wallet.id,
-            entry_type: 'credit',
+            wallet_id: merchantPersonalWallet.id,
+            entry_type: 'credit' as const,
             amount: merchantNet,
             description: 'QR payment received after 1% platform sales fee',
-          })),
+          },
           {
             transaction_id: txn.id,
             wallet_id: superadminWallet.id,

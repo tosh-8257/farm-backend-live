@@ -46,6 +46,12 @@ import {
   OTP_EXPIRY_MINUTES,
   OTP_MAX_ATTEMPTS,
 } from '../common/constants';
+import {
+  DEFAULT_REFRESH_TTL,
+  DEFAULT_REFRESH_TTL_MS,
+  longLivedSessionsEnabled,
+  parseDurationMs,
+} from './session-policy';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -57,6 +63,9 @@ export class AuthService implements OnModuleInit {
    */
   async onModuleInit() {
     if (process.env.NODE_ENV === 'test') return;
+    // Long-lived sessions keep their expiry. Wiping it would log everyone out
+    // at the next deploy or make refresh tokens live forever with no renewal.
+    if (longLivedSessionsEnabled()) return;
     try {
       const result = await this.prisma.user_sessions.updateMany({
         where: {
@@ -460,12 +469,22 @@ export class AuthService implements OnModuleInit {
     const requirePhoneVerification =
       this.cfg.get<string>('REQUIRE_PHONE_VERIFICATION') !== 'false';
 
+    const deviceId = (dto as { device?: { device_id?: string } }).device
+      ?.device_id;
+    const biometric = await this.canUseBiometricReauth(
+      user.id,
+      trustedDeviceId,
+      deviceId,
+    );
+
     // Regular users require Firebase phone verification by default. Admin and
-    // superadmin accounts are trusted after password authentication.
+    // superadmin accounts are trusted after password authentication. A trusted
+    // device with biometrics enrolled renews the session without SMS.
     if (
       !requirePhoneVerification ||
       userRole === 'admin' ||
-      userRole === 'super_admin'
+      userRole === 'super_admin' ||
+      biometric
     ) {
       const walletId = user.wallets[0]?.id;
       const tokens = await this.issueTokens(user.id, userRole, walletId);
@@ -478,7 +497,7 @@ export class AuthService implements OnModuleInit {
           jwt_id: tokens.jti,
           ip_address: ip,
           user_agent: userAgent,
-          expires_at: null,
+          expires_at: tokens.refresh_expires_at,
         },
       });
 
@@ -490,10 +509,12 @@ export class AuthService implements OnModuleInit {
         success: true,
         data: {
           requiresPhoneVerification: false,
+          reauth: biometric ? 'biometric' : 'password',
           access_token: tokens.access_token,
           refresh_token: tokens.refresh_token,
           token_type: 'Bearer',
-          expires_in: 900,
+          expires_in: this.accessExpiresSeconds(),
+          ...this.sessionMeta(),
           user: {
             id: user.id,
             first_name: user.first_name,
@@ -617,7 +638,14 @@ export class AuthService implements OnModuleInit {
     );
 
     const userRole = (user.role ?? 'user').toString().toLowerCase();
-    if (userRole === 'admin' || userRole === 'super_admin') {
+    const deviceId = (dto as { device?: { device_id?: string } }).device
+      ?.device_id;
+    const biometric = await this.canUseBiometricReauth(
+      user.id,
+      trustedDeviceId,
+      deviceId,
+    );
+    if (userRole === 'admin' || userRole === 'super_admin' || biometric) {
       const tokens = await this.issueTokens(
         user.id,
         userRole,
@@ -632,10 +660,10 @@ export class AuthService implements OnModuleInit {
           jwt_id: tokens.jti,
           ip_address: ip,
           user_agent: userAgent,
-          expires_at: null,
+          expires_at: tokens.refresh_expires_at,
         },
       });
-      return this.firebaseLoginResponse(user, tokens, false);
+      return this.firebaseLoginResponse(user, tokens, false, biometric);
     }
 
     const pending = await this.prisma.pending_login_verifications.create({
@@ -683,15 +711,18 @@ export class AuthService implements OnModuleInit {
     user: any,
     tokens: { access_token: string; refresh_token: string },
     requiresPhoneVerification: boolean,
+    biometric = false,
   ) {
     return {
       success: true,
       data: {
         requiresPhoneVerification,
+        reauth: biometric ? 'biometric' : 'password',
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         token_type: 'Bearer',
-        expires_in: 900,
+        expires_in: this.accessExpiresSeconds(),
+        ...this.sessionMeta(),
         user: {
           id: user.id,
           first_name: user.first_name,
@@ -811,7 +842,7 @@ export class AuthService implements OnModuleInit {
         jwt_id: tokens.jti,
         ip_address: ip,
         user_agent: userAgent,
-        expires_at: null,
+        expires_at: tokens.refresh_expires_at,
       },
     });
 
@@ -823,10 +854,12 @@ export class AuthService implements OnModuleInit {
     return {
       success: true,
       data: {
+        reauth: 'sms',
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         token_type: 'Bearer',
-        expires_in: 900,
+        expires_in: this.accessExpiresSeconds(),
+        ...this.sessionMeta(),
         user: {
           id: user.id,
           first_name: user.first_name,
@@ -1570,7 +1603,10 @@ export class AuthService implements OnModuleInit {
         select: { used_at: true },
       });
       const usedAt = current?.used_at ? new Date(current.used_at).getTime() : 0;
-      if (usedAt && Date.now() - usedAt < AuthService.REFRESH_RACE_GRACE_MS) {
+      const grace = longLivedSessionsEnabled()
+        ? 120_000
+        : AuthService.REFRESH_RACE_GRACE_MS;
+      if (usedAt && Date.now() - usedAt < grace) {
         await this.logSecurityEvent(
           userId,
           'REFRESH_RACE',
@@ -1616,7 +1652,7 @@ export class AuthService implements OnModuleInit {
         user_agent: session.user_agent, // Keep same user agent
         device_name: session.device_name,
         device_os: session.device_os,
-        expires_at: null,
+        expires_at: tokens.refresh_expires_at,
       },
     });
 
@@ -1633,10 +1669,200 @@ export class AuthService implements OnModuleInit {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         token_type: 'Bearer',
-        expires_in: 900,
+        expires_in: this.accessExpiresSeconds(),
+        reauth: 'refresh',
+        ...this.sessionMeta(),
       },
       message: 'Tokens refreshed successfully',
     };
+  }
+
+  /** Public so the app can decide between SMS and biometric unlock. */
+  sessionConfig() {
+    const life = longLivedSessionsEnabled() ? this.refreshLifetime() : null;
+    return {
+      data: {
+        long_lived_sessions: longLivedSessionsEnabled(),
+        access_expires_in: this.accessExpiresSeconds(),
+        refresh_expires_in: life?.seconds ?? null,
+        refresh_ttl: life
+          ? this.cfg.get<string>('JWT_REFRESH_EXPIRES') || DEFAULT_REFRESH_TTL
+          : null,
+        biometric_reauth:
+          longLivedSessionsEnabled() &&
+          this.deviceBinding?.isEnabled() === true,
+        device_binding: this.deviceBinding?.isEnabled() === true,
+      },
+    };
+  }
+
+  /**
+   * Renew tokens from a device key that only the OS releases after biometrics.
+   * Does not send or require an SMS OTP. Flag-gated.
+   */
+  async biometricReauth(
+    input: {
+      device: DeviceProofDto;
+      refresh_token?: string;
+    },
+    ip?: string,
+    userAgent?: string,
+  ) {
+    if (!longLivedSessionsEnabled()) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'BIOMETRIC_REAUTH_DISABLED',
+        message:
+          'Biometric session renewal is not enabled. Sign in with your phone code.',
+      });
+    }
+    if (!this.deviceBinding?.isEnabled()) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'DEVICE_BINDING_REQUIRED',
+        message: 'Device binding must be enabled for biometric re-auth.',
+      });
+    }
+    await this.deviceBinding.verifyProof(input.device);
+    const device = await this.prisma.trusted_devices.findFirst({
+      where: {
+        device_id: input.device.device_id,
+        public_key: input.device.public_key,
+        key_alg: input.device.key_alg,
+        status: 'trusted',
+        revoked_at: null,
+      },
+    });
+    if (!device) {
+      throw new UnauthorizedException('This device is not trusted');
+    }
+    const bio = await this.prisma.biometric_settings.findUnique({
+      where: { user_id: device.user_id },
+    });
+    if (!bio?.enabled) {
+      throw new ForbiddenException(
+        'Turn on biometrics for this device before using them to stay signed in',
+      );
+    }
+    if (bio.device_id && bio.device_id !== input.device.device_id) {
+      throw new UnauthorizedException(
+        'Biometrics are bound to a different device',
+      );
+    }
+    const user = await this.prisma.users.findUnique({
+      where: { id: device.user_id },
+      include: { wallets: { where: { is_active: true }, take: 1 } },
+    });
+    if (!user || user.is_deleted || user.is_suspended || !user.is_active) {
+      throw new ForbiddenException('Account is unavailable');
+    }
+    if (input.refresh_token) {
+      await this.rotatePresentedSession(
+        user.id,
+        input.refresh_token,
+        device.id,
+        ip,
+      );
+    }
+    const role = (user.role ?? 'user').toString().toLowerCase();
+    const tokens = await this.issueTokens(user.id, role, user.wallets[0]?.id);
+    const rounds = Number(this.cfg.get('BCRYPT_ROUNDS')) || 12;
+    await this.prisma.user_sessions.create({
+      data: {
+        trusted_device_id: device.id,
+        user_id: user.id,
+        refresh_token: await bcrypt.hash(tokens.refresh_token, rounds),
+        jwt_id: tokens.jti,
+        ip_address: ip,
+        user_agent: userAgent,
+        device_name: device.name,
+        device_os: device.platform,
+        expires_at: tokens.refresh_expires_at,
+      },
+    });
+    await this.prisma.biometric_settings.update({
+      where: { user_id: user.id },
+      data: {
+        last_verified_at: new Date(),
+        verification_count: { increment: 1 },
+        failed_attempts: 0,
+      },
+    });
+    await this.prisma.trusted_devices.update({
+      where: { id: device.id },
+      data: { last_seen_at: new Date() },
+    });
+    await this.logSecurityEvent(
+      user.id,
+      'BIOMETRIC_REAUTH',
+      'Session renewed with a device-bound biometric proof',
+      'low',
+      ip,
+    );
+    return {
+      success: true,
+      data: {
+        requiresPhoneVerification: false,
+        reauth: 'biometric',
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        token_type: 'Bearer',
+        expires_in: this.accessExpiresSeconds(),
+        ...this.sessionMeta(),
+        user: {
+          id: user.id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          username: user.username,
+          phone: user.phone,
+          email: user.email,
+          role: user.role,
+          kyc_status: user.kyc_status,
+          kyc_level: user.kyc_level,
+          phone_verified: user.phone_verified,
+          has_pin: !!user.pin_hash,
+          profile_image: user.profile_image,
+        },
+      },
+      message: 'Session renewed',
+    };
+  }
+
+  /** Revoke one matching refresh session. A mismatch does not mint anything. */
+  private async rotatePresentedSession(
+    userId: string,
+    rawRefreshToken: string,
+    trustedDeviceId: string,
+    ip?: string,
+  ) {
+    const sessions = await this.prisma.user_sessions.findMany({
+      where: {
+        user_id: userId,
+        trusted_device_id: trustedDeviceId,
+        AND: [
+          { OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }] },
+          { OR: [{ is_revoked: false }, { is_revoked: null }] },
+        ],
+      },
+      orderBy: { created_at: 'desc' },
+      take: 20,
+    });
+    for (const candidate of sessions) {
+      if (await bcrypt.compare(rawRefreshToken, candidate.refresh_token)) {
+        await this.prisma.user_sessions.update({
+          where: { id: candidate.id },
+          data: { is_revoked: true, used_at: new Date() },
+        });
+        return;
+      }
+    }
+    await this.logSecurityEvent(
+      userId,
+      'BIOMETRIC_REFRESH_IGNORED',
+      'Biometric re-auth continued without a matching refresh token',
+      'low',
+      ip,
+    );
   }
 
   // ── Logout ───────────────────────────────────────────────────────────────────
@@ -2068,16 +2294,80 @@ export class AuthService implements OnModuleInit {
     }
     const jti = randomBytes(16).toString('hex');
     const payload = { sub: userId, role, wallet_id: walletId, jti };
+    const refresh = this.refreshLifetime();
     const [access_token, refresh_token] = await Promise.all([
       this.jwt.signAsync(payload, {
         secret: accessSecret,
         expiresIn: this.cfg.get('JWT_ACCESS_EXPIRES', '15m'),
       }),
-      this.jwt.signAsync(payload, {
-        secret: refreshSecret,
-      }),
+      refresh.expiresIn
+        ? this.jwt.signAsync(payload, {
+            secret: refreshSecret,
+            expiresIn: refresh.expiresIn as `${number}d`,
+          })
+        : this.jwt.signAsync(payload, { secret: refreshSecret }),
     ]);
-    return { access_token, refresh_token, jti };
+    return {
+      access_token,
+      refresh_token,
+      jti,
+      refresh_expires_at: refresh.expiresAt,
+      refresh_expires_in: refresh.seconds,
+    };
+  }
+
+  /** Null expiry keeps the historical persistent refresh token. */
+  private refreshLifetime(): {
+    expiresIn?: string;
+    expiresAt: Date | null;
+    seconds: number | null;
+  } {
+    if (!longLivedSessionsEnabled()) {
+      return { expiresAt: null, seconds: null };
+    }
+    const spec =
+      this.cfg.get<string>('JWT_REFRESH_EXPIRES') || DEFAULT_REFRESH_TTL;
+    const ms = parseDurationMs(spec, DEFAULT_REFRESH_TTL_MS);
+    return {
+      expiresIn: spec,
+      expiresAt: new Date(Date.now() + ms),
+      seconds: Math.floor(ms / 1000),
+    };
+  }
+
+  private accessExpiresSeconds() {
+    const spec = this.cfg.get<string>('JWT_ACCESS_EXPIRES') || '15m';
+    return Math.floor(parseDurationMs(spec, 15 * 60_000) / 1000);
+  }
+
+  private sessionMeta() {
+    const life = longLivedSessionsEnabled() ? this.refreshLifetime() : null;
+    return {
+      refresh_expires_in: life?.seconds ?? null,
+      biometric_reauth_available:
+        longLivedSessionsEnabled() && this.deviceBinding?.isEnabled() === true,
+    };
+  }
+
+  /**
+   * A trusted device with biometrics enrolled can renew a session without SMS.
+   * Both LONG_LIVED_SESSIONS_ENABLED and DEVICE_BINDING_ENABLED must be on.
+   */
+  private async canUseBiometricReauth(
+    userId: string,
+    trustedDeviceId: string | null,
+    deviceId?: string | null,
+  ) {
+    if (!longLivedSessionsEnabled() || !trustedDeviceId || !deviceId) {
+      return false;
+    }
+    if (!this.deviceBinding?.isEnabled()) return false;
+    const bio = await this.prisma.biometric_settings.findUnique({
+      where: { user_id: userId },
+    });
+    if (!bio?.enabled) return false;
+    if (bio.device_id && bio.device_id !== deviceId) return false;
+    return true;
   }
 
   private async handleTokenTheft(userId: string, session: any, ip?: string) {
