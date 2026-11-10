@@ -21,6 +21,7 @@ import {
 import { sealSecret, walletSigner } from './key-vault';
 import { AlgoSigner } from './signer';
 import { chainReadiness } from './readiness';
+import { outboxBlocksReconcile } from './outbox-reconcile-gate';
 
 const explorer = (net: string) =>
   `https://${net === 'testnet' ? 'testnet.' : ''}explorer.perawallet.app`;
@@ -640,13 +641,12 @@ export class ChainWalletService {
       });
     const farmAsa = BigInt(process.env.FARM_ASA_ID!);
     if (mode === 'execute') {
-      const busy = await this.prisma.chain_outbox.count({
+      const open = await this.prisma.chain_outbox.findMany({
         where: { status: { notIn: ['sent', 'skipped'] } },
+        select: { status: true, last_error: true },
       });
-      if (busy)
-        throw new BadRequestException(
-          `${busy} on-chain transfers are still in flight; run again when the outbox is drained`,
-        );
+      const gate = outboxBlocksReconcile(open);
+      if (!gate.ok) throw new BadRequestException(gate.reason);
     }
     const ws = await this.prisma.user_chain_wallets.findMany({
       where: {
