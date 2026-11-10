@@ -7,6 +7,15 @@ import {
 } from '@nestjs/common';
 import { FeesService } from '../fees/fees.service';
 import { FEE_KEYS } from '../fees/fee-defaults';
+import {
+  addGroup,
+  applyFeeRows,
+  catalogStreams,
+  feeGrandTotal,
+  FeePeriod,
+  FeeRow,
+  listFees,
+} from './platform-fees';
 import { PrismaService } from '../database/prisma.service';
 import { EscrowService } from '../escrow/escrow.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -2066,28 +2075,12 @@ export class AdminService {
       }),
     ]);
 
-    // Every completed transaction that carried a platform fee, by type, so
-    // new fee sources (transfers, swaps, bills, NFC, etc.) are never missed.
-    let feeGroups: any[] = [];
+    let revenue_streams: ReturnType<typeof listFees>;
     try {
-      feeGroups = await (this.prisma.transactions as any).groupBy({
-        by: ['transaction_type'],
-        where: { status: 'completed', fee: { gt: 0 } },
-        _sum: { fee: true },
-        _count: { id: true },
-      });
+      revenue_streams = await this.platformFeeReport();
     } catch {
-      feeGroups = [];
+      revenue_streams = [];
     }
-    const revenue_streams = feeGroups
-      .map((g: any) => ({
-        type: String(g.transaction_type ?? 'other'),
-        label: AdminService.revenueLabel(String(g.transaction_type ?? 'other')),
-        total: Number(Number(g._sum?.fee ?? 0).toFixed(8)),
-        count: Number(g._count?.id ?? 0),
-      }))
-      .filter((r) => r.total > 0)
-      .sort((a, b) => b.total - a.total);
     const system_checks = await this.superadminSystemChecks();
 
     const escrow_creation_earnings = Number(escrowCreationAgg._sum.fee ?? 0);
@@ -2118,6 +2111,7 @@ export class AdminService {
         pending_kyc: pendingKyc,
         system_checks,
         revenue_streams,
+        fees: revenue_streams,
         recent_activities: recentTx.map((tx: any) => ({
           description: `${tx.transaction_type} transaction of $${tx.amount}`,
           type: tx.transaction_type,
@@ -2141,6 +2135,67 @@ export class AdminService {
           (escrowReleaseAgg._count.id ?? 0),
       },
     };
+  }
+
+  /** Collected fees by type. Day, week, and month are rolling windows. */
+  private async platformFeeReport() {
+    const streams = catalogStreams();
+    const now = new Date();
+    const startToday = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+    const windows: { period: FeePeriod; since?: Date }[] = [
+      { period: 'all' },
+      { period: 'day', since: startToday },
+      { period: 'week', since: new Date(now.getTime() - 7 * 86_400_000) },
+      { period: 'month', since: new Date(now.getTime() - 30 * 86_400_000) },
+    ];
+    for (const window of windows) {
+      const groups = await (this.prisma.transactions as any).groupBy({
+        by: ['transaction_type'],
+        where: {
+          status: 'completed',
+          fee: { gt: 0 },
+          ...(window.since ? { created_at: { gte: window.since } } : {}),
+        },
+        _sum: { fee: true },
+        _count: { id: true },
+      });
+      addGroup(streams, groups, window.period);
+    }
+    const findMany = (this.prisma.transactions as any).findMany;
+    const rows: FeeRow[] =
+      typeof findMany === 'function'
+        ? await findMany.call(this.prisma.transactions, {
+            where: {
+              OR: [
+                {
+                  transaction_type: 'escrow_lock',
+                  status: 'completed',
+                  fee: { gt: 0 },
+                },
+                { transaction_type: 'transfer', status: 'completed' },
+                { transaction_type: 'fee', status: 'completed' },
+                {
+                  transaction_type: 'mkulima_usage',
+                  status: 'pending',
+                  fee: { gt: 0 },
+                },
+              ],
+            },
+            select: {
+              transaction_type: true,
+              status: true,
+              fee: true,
+              amount: true,
+              description: true,
+              metadata: true,
+              created_at: true,
+            },
+          })
+        : [];
+    applyFeeRows(streams, rows ?? [], now);
+    return listFees(streams);
   }
 
   static revenueLabel(type: string): string {
@@ -2368,17 +2423,24 @@ export class AdminService {
         }),
       ]);
 
+    let fees: ReturnType<typeof listFees>;
+    try {
+      fees = await this.platformFeeReport();
+    } catch {
+      fees = [];
+    }
     const escrowCreationRevenue = Number(creationFees._sum.fee ?? 0);
     const escrowReleaseRevenue = Number(releaseFees._sum.fee ?? 0);
     const withdrawalRevenue = Number(withdrawalFees._sum.fee ?? 0);
     const merchantSalesRevenue = Number(merchantSalesFees._sum.fee ?? 0);
+    const legacyRevenue =
+      escrowCreationRevenue +
+      escrowReleaseRevenue +
+      withdrawalRevenue +
+      merchantSalesRevenue;
+    const reportedRevenue = feeGrandTotal(fees);
     const totalPlatformRevenue = Number(
-      (
-        escrowCreationRevenue +
-        escrowReleaseRevenue +
-        withdrawalRevenue +
-        merchantSalesRevenue
-      ).toFixed(8),
+      (reportedRevenue > 0 ? reportedRevenue : legacyRevenue).toFixed(8),
     );
 
     const availableBalance = Math.max(
@@ -2398,6 +2460,7 @@ export class AdminService {
         withdrawal_revenue: withdrawalRevenue,
         merchant_sales_revenue: merchantSalesRevenue,
         total_platform_revenue: totalPlatformRevenue,
+        fees,
         escrow_creation_count: creationFees._count.id ?? 0,
         escrow_release_count: releaseFees._count.id ?? 0,
         withdrawal_fee_count: withdrawalFees._count.id ?? 0,
