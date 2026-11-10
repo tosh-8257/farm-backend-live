@@ -38,6 +38,7 @@ describe('Firebase phone verification flow', () => {
         phone_number: '+254700123456',
       }),
     };
+    const mine = jest.fn().mockResolvedValue({ enabled: true, data: null });
     const service = new AuthService(
       prisma as any,
       {} as any,
@@ -45,6 +46,9 @@ describe('Firebase phone verification flow', () => {
       {} as any,
       {} as any,
       firebase as any,
+      {} as any,
+      undefined,
+      { get: () => ({ mine }) } as any,
     );
 
     jest.spyOn(service as any, 'issueTokens').mockResolvedValue({
@@ -74,6 +78,7 @@ describe('Firebase phone verification flow', () => {
     expect(result.data.access_token).toBe('farm-access-token');
     expect(result.data.refresh_token).toBe('farm-refresh-token');
     expect(result.data.user.phone_verified).toBe(true);
+    expect(mine).toHaveBeenCalledWith('user-1');
   });
 
   it('rejects a Firebase token whose phone does not match the pending login', async () => {

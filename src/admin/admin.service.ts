@@ -1,10 +1,13 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
   Optional,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import { scheduleCustodialWallet } from '../chain-wallet/schedule-custodial-wallet';
 import { FeesService } from '../fees/fees.service';
 import { FEE_KEYS } from '../fees/fee-defaults';
 import { PrismaService } from '../database/prisma.service';
@@ -21,6 +24,8 @@ const EXCHANGE_RATES_CACHE_TTL_SECONDS = 300;
 
 @Injectable()
 export class AdminService {
+  private readonly log = new Logger(AdminService.name);
+
   constructor(
     private prisma: PrismaService,
     private escrowService: EscrowService,
@@ -29,6 +34,7 @@ export class AdminService {
     private readonly currencyConversionService: CurrencyConversionService,
     @Optional() private readonly cache?: CacheService,
     @Optional() private readonly fees?: FeesService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   async getDashboardStats() {
@@ -1761,6 +1767,8 @@ export class AdminService {
 
       return u;
     });
+
+    scheduleCustodialWallet(this.moduleRef, this.log, user.id);
 
     return {
       data: {

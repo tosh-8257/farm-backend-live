@@ -5,6 +5,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../database/prisma.service';
@@ -27,15 +28,27 @@ const explorer = (net: string) =>
 
 import { businessWalletEnabled } from '../business-ops/business-wallet';
 import {
+  backfillCost,
+  BackfillMode,
+  evaluateBackfillSend,
+  fundMicroAlgos,
+} from '../ops/backfill-wallets-policy';
+import {
   evaluateReconcileSend,
   ReconcileMode,
   WalletDelta,
 } from '../ops/reconcile-policy';
+import {
+  PROVISION_RETRY_BATCH,
+  provisionRetryDue,
+  STUCK_PROVISIONING_MS,
+} from './wallet-provision-policy';
 
 @Injectable()
 export class ChainWalletService {
   private readonly log = new Logger(ChainWalletService.name);
   private polling = false;
+  private retrying = false;
   constructor(
     private readonly prisma: PrismaService,
     private readonly chain: AlgorandWalletClient,
@@ -118,8 +131,12 @@ export class ChainWalletService {
     };
   }
 
-  /** Returns (and on first call creates) the user's custodial address. */
-  async mine(userId: string) {
+  /**
+   * Returns (and on first call creates) the user's custodial address.
+   * Provisioning runs in the background unless awaitProvision is set.
+   * No-ops, without creating a row, unless CHAIN_WALLETS are enabled.
+   */
+  async mine(userId: string, opts?: { awaitProvision?: boolean }) {
     const c = chainConfig();
     if (!c.wallets.enabled) return { data: null, enabled: false };
     let w = await this.prisma.user_chain_wallets.findUnique({
@@ -147,8 +164,25 @@ export class ChainWalletService {
       }
       if (!w) throw new ServiceUnavailableException('Could not create wallet');
     }
-    if (w.status === 'created' || w.status === 'failed')
-      void this.provision(w.id).catch(() => undefined);
+    if (w.status === 'created' || w.status === 'failed') {
+      const job = this.provision(w.id).catch(() => undefined);
+      if (opts?.awaitProvision) await job;
+      else void job;
+    }
+    if (opts?.awaitProvision) {
+      const fresh = await this.prisma.user_chain_wallets.findUnique({
+        where: { id: w.id },
+      });
+      if (
+        fresh &&
+        (fresh.status === 'provisioning' || fresh.status === 'created')
+      ) {
+        const settled = await this.waitForProvision(fresh.id);
+        if (settled) w = settled;
+      } else if (fresh) {
+        w = fresh;
+      }
+    }
     return { data: this.present(w), enabled: true };
   }
 
@@ -185,17 +219,117 @@ export class ChainWalletService {
         );
       await this.prisma.user_chain_wallets.update({
         where: { id },
-        data: { ...data, status: 'ready' },
+        data: { ...data, status: 'ready', provision_attempts: 0 },
       });
     } catch (e: any) {
       const msg = String(e?.message ?? 'provisioning failed').slice(0, 300);
       this.log.warn(`Wallet ${id} provisioning failed: ${msg}`);
       await this.prisma.user_chain_wallets.update({
         where: { id },
-        data: { status: 'failed', error: msg },
+        data: {
+          status: 'failed',
+          error: msg,
+          provision_attempts: { increment: 1 },
+        },
       });
     } finally {
       sk?.wipe();
+    }
+  }
+
+  private async waitForProvision(id: string) {
+    const deadline = Date.now() + 90_000;
+    let current = await this.prisma.user_chain_wallets.findUnique({
+      where: { id },
+    });
+    while (
+      current &&
+      (current.status === 'provisioning' || current.status === 'created') &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      current = await this.prisma.user_chain_wallets.findUnique({
+        where: { id },
+      });
+    }
+    return current;
+  }
+
+  /**
+   * Wallets left created (the first provision never started) or failed are
+   * retried with backoff. A provisioning row stuck for 10 minutes is marked
+   * failed so the next pass can pick it up. Does not move FARM.
+   */
+  @Interval('chain-wallet-provision-retry', 60_000)
+  async retryUnprovisioned() {
+    if (!chainConfig().wallets.enabled || this.retrying) return;
+    this.retrying = true;
+    try {
+      await this.prisma.user_chain_wallets.updateMany({
+        where: {
+          status: 'provisioning',
+          updated_at: { lt: new Date(Date.now() - STUCK_PROVISIONING_MS) },
+        },
+        data: {
+          status: 'failed',
+          error: 'provisioning did not finish',
+          provision_attempts: { increment: 1 },
+        },
+      });
+      const rows = await this.prisma.user_chain_wallets.findMany({
+        where: { status: { in: ['created', 'failed'] } },
+        orderBy: { updated_at: 'asc' },
+        take: 100,
+        select: {
+          id: true,
+          status: true,
+          updated_at: true,
+          provision_attempts: true,
+        },
+      });
+      const now = Date.now();
+      let done = 0;
+      for (const row of rows) {
+        if (done >= PROVISION_RETRY_BATCH) break;
+        if (
+          !provisionRetryDue({
+            status: row.status,
+            attempts: row.provision_attempts,
+            updatedAt: row.updated_at,
+            now,
+          })
+        ) {
+          continue;
+        }
+        const spendable = await this.funderSpendable();
+        if (spendable == null || spendable < fundMicroAlgos()) {
+          this.log.warn(
+            'Wallet provision retry stopped: funder ALGO balance too low',
+          );
+          break;
+        }
+        await this.provision(row.id);
+        done += 1;
+      }
+    } catch (e: any) {
+      this.log.warn(`Wallet provision retry failed: ${e?.message ?? e}`);
+    } finally {
+      this.retrying = false;
+    }
+  }
+
+  private async funderSpendable(): Promise<bigint | null> {
+    try {
+      const info = await this.chain.algoInfo(this.chain.funderAddress());
+      const spendable = info.amount - info.minBalance;
+      return spendable > 0n ? spendable : 0n;
+    } catch (error) {
+      this.log.warn(
+        `Could not read funder ALGO balance: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
     }
   }
 
@@ -1018,6 +1152,170 @@ export class ChainWalletService {
       });
     }
     return rows;
+  }
+
+  /**
+   * Users with no custodial wallet, FARM balance first. Does not move FARM
+   * and does not create rows in dry mode.
+   */
+  private async backfillCandidates(limit: number) {
+    const farm = Prisma.sql`
+      COALESCE(SUM(
+        CASE
+          WHEN w.currency = 'FARM'
+           AND COALESCE(w.is_active, true) = true
+           AND COALESCE(w.wallet_type::text, 'user') NOT IN ('platform', 'treasury')
+          THEN COALESCE(w.balance, 0) + COALESCE(w.locked_balance, 0)
+          ELSE 0
+        END
+      ), 0)`;
+    const counts = await this.prisma.$queryRaw<
+      { users_without_wallet: number; with_farm_balance: number }[]
+    >(Prisma.sql`
+      SELECT COUNT(*)::int AS users_without_wallet,
+             COUNT(*) FILTER (WHERE farm > 0)::int AS with_farm_balance
+      FROM (
+        SELECT u.id, ${farm}::float AS farm
+        FROM users u
+        LEFT JOIN wallets w ON w.user_id = u.id
+        WHERE COALESCE(u.is_deleted, false) = false
+          AND NOT EXISTS (
+            SELECT 1 FROM user_chain_wallets c WHERE c.user_id = u.id
+          )
+        GROUP BY u.id
+      ) missing`);
+    const rows = await this.prisma.$queryRaw<{ id: string; farm: number }[]>(
+      Prisma.sql`
+      SELECT u.id, ${farm}::float AS farm
+      FROM users u
+      LEFT JOIN wallets w ON w.user_id = u.id
+      WHERE COALESCE(u.is_deleted, false) = false
+        AND NOT EXISTS (
+          SELECT 1 FROM user_chain_wallets c WHERE c.user_id = u.id
+        )
+      GROUP BY u.id, u.created_at
+      ORDER BY farm DESC, u.created_at ASC NULLS LAST
+      LIMIT ${limit}`,
+    );
+    const num = (value: unknown) => {
+      const n = Number(value ?? 0);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const selected = rows.map((row) => ({
+      id: row.id,
+      farm: num(row.farm),
+    }));
+    return {
+      usersWithoutWallet: num(counts[0]?.users_without_wallet),
+      withFarmBalance: num(counts[0]?.with_farm_balance),
+      ids: selected.map((row) => row.id),
+      withFarmInSelection: selected.filter((row) => row.farm > 0).length,
+    };
+  }
+
+  /**
+   * Backfill custodial wallets. Dry lists the gap and the ALGO it would cost
+   * at CHAIN_WALLET_FUND_MICROALGOS each. Send creates and provisions that
+   * many, sequentially, and stops if the funder cannot cover the next one.
+   * Does not move FARM.
+   */
+  async operatorBackfillWallets(input: {
+    mode: BackfillMode;
+    limit: number;
+    expectCount?: number;
+  }) {
+    const each = fundMicroAlgos();
+    const enabled = chainConfig().wallets.enabled;
+    const first = await this.backfillCandidates(input.limit);
+    const decision = evaluateBackfillSend({
+      mode: input.mode,
+      selected: first.ids.length,
+      expectCount: input.expectCount,
+    });
+    if (!decision.ok) throw new BadRequestException(decision.reason);
+    if (input.mode === 'send' && !enabled) {
+      throw new BadRequestException('CHAIN_WALLETS are not enabled');
+    }
+    const spendable = enabled ? await this.funderSpendable() : null;
+    const snapshot = (
+      snap: {
+        usersWithoutWallet: number;
+        withFarmBalance: number;
+        ids: string[];
+        withFarmInSelection: number;
+      },
+      balance: bigint | null,
+    ) => ({
+      mode: input.mode,
+      enabled,
+      users_without_wallet: snap.usersWithoutWallet,
+      with_farm_balance: snap.withFarmBalance,
+      selected: snap.ids.length,
+      selected_with_farm_balance: snap.withFarmInSelection,
+      microalgos_each: Number(each),
+      microalgos_total: Number(backfillCost(snap.ids.length, each)),
+      funder_spendable_microalgos: balance == null ? null : Number(balance),
+      funder_enough:
+        balance != null && balance >= backfillCost(snap.ids.length, each),
+    });
+    if (input.mode === 'dry') return snapshot(first, spendable);
+
+    const again = await this.backfillCandidates(input.limit);
+    const second = evaluateBackfillSend({
+      mode: 'send',
+      selected: again.ids.length,
+      expectCount: input.expectCount,
+    });
+    if (!second.ok) throw new BadRequestException(second.reason);
+    const needed = backfillCost(again.ids.length, each);
+    const available = await this.funderSpendable();
+    if (available == null) {
+      throw new ServiceUnavailableException(
+        'Could not read funder ALGO balance',
+      );
+    }
+    if (available < needed) {
+      throw new BadRequestException(
+        `Refusing send: funder spendable ALGO is too low for ${again.ids.length} wallet(s) at ${each} microALGO each`,
+      );
+    }
+    let provisioned = 0;
+    let failed = 0;
+    let stopped = false;
+    let stop_reason: string | null = null;
+    const addresses: string[] = [];
+    for (const userId of again.ids) {
+      const left = await this.funderSpendable();
+      if (left == null || left < each) {
+        stopped = true;
+        stop_reason = 'funder ALGO balance too low';
+        break;
+      }
+      try {
+        const result = await this.mine(userId, { awaitProvision: true });
+        if (result.enabled && result.data?.ready && result.data.address) {
+          provisioned += 1;
+          addresses.push(result.data.address);
+        } else {
+          failed += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        this.log.warn(
+          `Backfill wallet for ${userId} failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return {
+      ...snapshot(again, await this.funderSpendable()),
+      provisioned,
+      failed,
+      stopped,
+      stop_reason,
+      addresses,
+    };
   }
 
   /**

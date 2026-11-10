@@ -26,7 +26,8 @@
     "prisma:reset": "node ./node_modules/prisma/build/index.js migrate reset",
     "seed": "ts-node -r tsconfig-paths/register prisma/seed/index.ts",
     "ops:reconcile": "node dist/ops/reconcile.js",
-    "ops:credit-deposit": "node dist/ops/credit-deposit.js"
+    "ops:credit-deposit": "node dist/ops/credit-deposit.js",
+    "ops:backfill-wallets": "node dist/ops/backfill-wallets.js"
   },
   "dependencies": {
     "@algorandfoundation/falcon-wasm": "^1.0.1",

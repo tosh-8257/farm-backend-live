@@ -1,5 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Test, TestingModule } from '@nestjs/testing';
+import { hashOtp } from '../common/utils/otp-hash.util';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../database/prisma.service';
 import { JwtService } from '@nestjs/jwt';
@@ -160,6 +162,136 @@ describe('AuthService', () => {
       'phone_verification',
       true,
     );
+  });
+
+  it('schedules a custodial wallet during registration without waiting for it', async () => {
+    const prisma = module.get(PrismaService);
+    const config = module.get(ConfigService);
+    jest.spyOn(prisma.users, 'findFirst').mockResolvedValue(null);
+    jest
+      .spyOn(config, 'get')
+      .mockImplementation((key: string) =>
+        key === 'QR_HMAC_SECRET' ? 'test-secret' : undefined,
+      );
+    jest
+      .spyOn(prisma, '$transaction')
+      .mockImplementation(async (callback: any) =>
+        callback({
+          users: {
+            create: jest.fn().mockResolvedValue({
+              id: 'new-user',
+              first_name: 'Test',
+              phone: '+254700123456',
+            }),
+          },
+          wallets: { create: jest.fn().mockResolvedValue({}) },
+          activity_logs: { create: jest.fn().mockResolvedValue({}) },
+        }),
+      );
+    jest
+      .spyOn(service, 'sendOtp')
+      .mockResolvedValue({ message: 'OTP delivery started' });
+    const mine = jest.fn().mockReturnValue(new Promise(() => {}));
+    jest.spyOn(module.get(ModuleRef), 'get').mockReturnValue({ mine });
+
+    await expect(
+      service.register(
+        {
+          first_name: 'Test',
+          last_name: 'User',
+          username: 'test_user',
+          phone: '+254700123456',
+          email: 'test@example.com',
+          password: 'NewSecure1!Password',
+        } as any,
+        '203.0.113.1',
+      ),
+    ).resolves.toEqual({
+      message: 'Registration successful. OTP sent to your phone number.',
+    });
+    expect(mine).toHaveBeenCalledWith('new-user');
+  });
+
+  it('registration succeeds when custodial wallet setup fails', async () => {
+    const prisma = module.get(PrismaService);
+    const config = module.get(ConfigService);
+    jest.spyOn(prisma.users, 'findFirst').mockResolvedValue(null);
+    jest
+      .spyOn(config, 'get')
+      .mockImplementation((key: string) =>
+        key === 'QR_HMAC_SECRET' ? 'test-secret' : undefined,
+      );
+    jest
+      .spyOn(prisma, '$transaction')
+      .mockImplementation(async (callback: any) =>
+        callback({
+          users: {
+            create: jest.fn().mockResolvedValue({
+              id: 'new-user',
+              first_name: 'Test',
+              phone: '+254700123456',
+            }),
+          },
+          wallets: { create: jest.fn().mockResolvedValue({}) },
+          activity_logs: { create: jest.fn().mockResolvedValue({}) },
+        }),
+      );
+    jest
+      .spyOn(service, 'sendOtp')
+      .mockResolvedValue({ message: 'OTP delivery started' });
+    const mine = jest.fn().mockRejectedValue(new Error('chain down'));
+    jest.spyOn(module.get(ModuleRef), 'get').mockReturnValue({ mine });
+
+    await expect(
+      service.register(
+        {
+          first_name: 'Test',
+          last_name: 'User',
+          username: 'test_user',
+          phone: '+254700123456',
+          password: 'NewSecure1!Password',
+        } as any,
+        '203.0.113.1',
+      ),
+    ).resolves.toEqual({
+      message: 'Registration successful. OTP sent to your phone number.',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  it('schedules a custodial wallet when phone verification succeeds', async () => {
+    const prisma = module.get(PrismaService);
+    const config = module.get(ConfigService);
+    jest.spyOn(config, 'get').mockImplementation((key: string) => {
+      if (key === 'OTP_HASH_SECRET') return 'otp-secret';
+      return undefined;
+    });
+    jest.spyOn(prisma.users, 'findUnique').mockResolvedValue({
+      id: 'user-1',
+      phone: '+254700123456',
+    } as any);
+    jest.spyOn(prisma.otp_verifications, 'findFirst').mockResolvedValue({
+      id: 'otp-1',
+      otp_code: hashOtp('123456', 'otp-secret'),
+      expires_at: new Date(Date.now() + 60_000),
+      attempts: 0,
+    } as any);
+    jest.spyOn(prisma.otp_verifications, 'update').mockResolvedValue({} as any);
+    jest.spyOn(prisma.users, 'update').mockResolvedValue({} as any);
+    const mine = jest.fn().mockResolvedValue({ enabled: false, data: null });
+    jest.spyOn(module.get(ModuleRef), 'get').mockReturnValue({ mine });
+
+    await expect(
+      service.verifyOtp('+254700123456', '123456', 'phone_verification'),
+    ).resolves.toEqual({
+      message: 'OTP verified successfully',
+      user_id: 'user-1',
+    });
+    expect(mine).toHaveBeenCalledWith('user-1');
+
+    mine.mockClear();
+    await service.verifyOtp('+254700123456', '123456', 'forgot_pin');
+    expect(mine).not.toHaveBeenCalled();
   });
 
   it('checks username, email case-insensitively, and phone uniqueness', async () => {

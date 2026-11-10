@@ -12,6 +12,7 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -52,6 +53,7 @@ import {
   longLivedSessionsEnabled,
   parseDurationMs,
 } from './session-policy';
+import { scheduleCustodialWallet } from '../chain-wallet/schedule-custodial-wallet';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -95,6 +97,7 @@ export class AuthService implements OnModuleInit {
     private firebase: FirebaseService,
     private readonly redis: RedisService,
     @Optional() private readonly deviceBinding?: DeviceBindingService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   /** Device-binding gate; a no-op when DEVICE_BINDING_ENABLED is not true. */
@@ -229,6 +232,7 @@ export class AuthService implements OnModuleInit {
           ),
         );
     }
+    scheduleCustodialWallet(this.moduleRef, this.logger, user.id);
     await this.sendOtp(user.id, user.phone, 'phone_verification', true);
     return {
       message: 'Registration successful. OTP sent to your phone number.',
@@ -313,6 +317,7 @@ export class AuthService implements OnModuleInit {
       return created;
     });
 
+    scheduleCustodialWallet(this.moduleRef, this.logger, admin.id);
     await this.sendOtp(admin.id, admin.phone, 'phone_verification', true);
     return { message: 'Admin account created successfully' };
   }
@@ -369,6 +374,7 @@ export class AuthService implements OnModuleInit {
         where: { id: user.id },
         data: { phone_verified: true },
       });
+      scheduleCustodialWallet(this.moduleRef, this.logger, user.id);
     }
     return { message: 'OTP verified successfully', user_id: user.id };
   }
@@ -850,6 +856,7 @@ export class AuthService implements OnModuleInit {
       where: { id: user.id },
       data: { phone_verified: true },
     });
+    scheduleCustodialWallet(this.moduleRef, this.logger, user.id);
 
     return {
       success: true,
