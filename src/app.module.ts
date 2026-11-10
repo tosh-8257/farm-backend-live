@@ -2,7 +2,8 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { BullModule } from '@nestjs/bull';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { DatabaseModule } from './database/database.module';
 import { FeesModule } from './fees/fees.module';
 import { PrismaModule } from './database/prisma.module';
@@ -74,9 +75,9 @@ import { IdempotencyMiddleware } from './common/middleware/idempotency.middlewar
       useFactory: (cfg: ConfigService) => ({
         throttlers: [
           {
-            // Default raised from 20 to 100 req/min per IP: the old 60 ms window meant
-            // no effective limit, and 20/min would throttle normal app usage.
-            limit: Number(cfg.get<string>('RATE_LIMIT')) || 100,
+            // Per user when a signed token is present, otherwise per client IP.
+            // 100/min was shared by everyone behind one mobile-carrier address.
+            limit: Number(cfg.get<string>('RATE_LIMIT')) || 300,
             // RATE_LIMIT_TTL is expressed in seconds; @nestjs/throttler v6 expects ms.
             ttl: (Number(cfg.get<string>('RATE_LIMIT_TTL')) || 60) * 1000,
           },
@@ -156,7 +157,7 @@ import { IdempotencyMiddleware } from './common/middleware/idempotency.middlewar
     ExpiryTasksService,
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
     {
       provide: APP_INTERCEPTOR,

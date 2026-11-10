@@ -51,6 +51,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
           user_id: payload.sub,
           OR: [{ is_revoked: false }, { is_revoked: null }],
         },
+        select: { id: true },
       });
 
       if (!session) {

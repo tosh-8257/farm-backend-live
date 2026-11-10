@@ -42,6 +42,7 @@ export class WalletsController {
   constructor(private readonly svc: WalletsService) {}
 
   @Permissions('wallet:read')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Get()
   @ApiOperation({ summary: 'Get my wallet balance' })
   getWallet(@CurrentUser() u: any) {
@@ -49,6 +50,7 @@ export class WalletsController {
   }
 
   @Permissions('wallet:write')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Post('send')
   @UseGuards(JwtGuard, KycGuard)
   @ApiOperation({ summary: 'Send FARM tokens (PIN required)' })
@@ -57,7 +59,7 @@ export class WalletsController {
   }
 
   @Permissions('wallet:read')
-  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get('transactions')
   @ApiOperation({ summary: 'List my transactions' })
   transactions(@CurrentUser() u: any, @Query() q: any) {

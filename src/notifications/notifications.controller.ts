@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 
 import { AuthGuard } from '@nestjs/passport';
+import { Throttle } from '@nestjs/throttler';
 
 import { NotificationsService } from './notifications.service';
 import { RegisterDeviceTokenDto } from './dto/register-device-token.dto';
@@ -52,6 +53,7 @@ export class NotificationsController {
 
   @Get()
   @Permissions('notifications:read')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   async getNotifications(@Req() req, @Query() query: any) {
     return this.notificationsService.getNotifications(req.user.id, query);
   }

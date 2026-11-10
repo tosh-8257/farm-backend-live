@@ -99,6 +99,7 @@ export class DepositController {
   }
 
   @Permissions('payments:read')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Get('history')
   async history(@Req() req: AuthRequest) {
     const userId = req.user?.id;
@@ -110,6 +111,7 @@ export class DepositController {
   }
 
   @Permissions('payments:read')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Get('wallet')
   async wallet(@Req() req: AuthRequest) {
     const userId = req.user?.id;
@@ -189,6 +191,7 @@ export class NowpaymentsWalletController {
   }
 
   @Permissions('payments:read')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   @Get('crypto/limits')
   limits() {
     return this.depositService.getCryptoLimits();
@@ -201,7 +204,7 @@ export class NowpaymentsWalletController {
   }
 
   @Permissions('payments:read')
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get('crypto/estimate')
   async estimate(
     @Query('amount') amountRaw: string,
@@ -217,7 +220,7 @@ export class NowpaymentsWalletController {
 
   // From main (83bcfe6): path-param variant kept for existing clients.
   @Permissions('payments:read')
-  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Throttle({ default: { limit: 120, ttl: 60_000 } })
   @Get('crypto/estimate/:currency')
   estimateByCurrency(
     @Param('currency') currency: string,

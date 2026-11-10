@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { BusinessOpsModule } from '../business-ops/business-ops.module';
 import { ChainWalletModule } from '../chain-wallet/chain-wallet.module';
 import { AlgorandAsaClient } from './algorand-asa.client';
@@ -18,7 +19,12 @@ import {
 } from './tokenization.controller';
 
 @Module({
-  imports: [AuthModule, BusinessOpsModule, ChainWalletModule],
+  imports: [
+    AuthModule,
+    NotificationsModule,
+    BusinessOpsModule,
+    ChainWalletModule,
+  ],
   controllers: [
     TokenizationController,
     AdminTokenizationController,

@@ -246,6 +246,13 @@ export class AdminProjectsController {
   @Get() list(@Query() q: any) {
     return this.svc.list(q);
   }
+  @Get('review-queue')
+  @ApiOperation({
+    summary: 'Projects a business submitted that are waiting for review',
+  })
+  reviewQueue(@Query() q: any) {
+    return this.svc.list({ ...q, status: 'submitted' });
+  }
   @Get('investors') investors(@Query() q: any) {
     return this.svc.listInvestors(q);
   }
@@ -265,7 +272,12 @@ export class AdminProjectsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReviewActionDto,
   ) {
-    return this.svc.transition(u.id, id, dto.action, dto.notes);
+    return this.svc.transition(
+      u.id,
+      id,
+      dto.action,
+      dto.notes || dto.reason,
+    );
   }
   /** Project made a loss: refund this project's consolidation reserve pro-rata. */
   @Post(':id/consolidation-refund')

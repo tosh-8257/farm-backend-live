@@ -4,14 +4,20 @@ import {
   Post,
   UploadedFile,
   UploadedFiles,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import type { Express } from 'express';
 import { memoryStorage } from 'multer';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { UploadsService } from './uploads.service';
+import {
+  detectImageKind,
+  pickUploadedImages,
+  UploadExceptionFilter,
+} from './upload-errors';
 
 const imageUploadOptions = {
   storage: memoryStorage(),
@@ -21,14 +27,24 @@ const imageUploadOptions = {
     file: Express.Multer.File,
     callback: (error: Error | null, acceptFile: boolean) => void,
   ) => {
-    const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-    const allowedExtensions = /\.(jpe?g|png|webp)$/i;
+    const allowedMimeTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/heic',
+      'image/heif',
+      'image/heic-sequence',
+      'application/octet-stream',
+    ]);
+    const allowedExtensions = /\.(jpe?g|png|webp|heic|heif)$/i;
     if (
       !allowedMimeTypes.has(file.mimetype) ||
       !allowedExtensions.test(file.originalname)
     ) {
       return callback(
-        new BadRequestException('Only JPG, PNG, and WebP images are supported'),
+        new BadRequestException(
+          'Only JPG, PNG, WebP, and HEIC images are supported',
+        ),
         false,
       );
     }
@@ -88,25 +104,66 @@ export function detectDocumentKind(buffer: Buffer): 'pdf' | 'image' | null {
 }
 
 @UseGuards(JwtGuard)
+@UseFilters(UploadExceptionFilter)
 @Controller({ path: 'uploads', version: '1' })
 export class UploadsController {
   constructor(private readonly uploadsService: UploadsService) {}
 
   @Post('single')
-  @UseInterceptors(FileInterceptor('image', imageUploadOptions))
-  async uploadSingle(@UploadedFile() file?: Express.Multer.File) {
-    if (!file) throw new BadRequestException('An image file is required');
-    const uploaded = await this.uploadsService.uploadSingle(file);
+  @UseInterceptors(AnyFilesInterceptor(imageUploadOptions))
+  async uploadSingle(@UploadedFiles() files?: Express.Multer.File[]) {
+    const file = pickUploadedImages(files)[0];
+    if (!file) {
+      throw new BadRequestException(
+        'An image file is required. Send it as image, cover, photo, or file.',
+      );
+    }
+    const kind = this.requireImage(file);
+    const uploaded = await this.uploadsService.uploadSingle(
+      file,
+      kind === 'heic' ? 'jpg' : undefined,
+    );
     return { url: uploaded.url };
   }
 
   @Post('multiple')
-  @UseInterceptors(FilesInterceptor('images', 5, imageUploadOptions))
+  @UseInterceptors(
+    AnyFilesInterceptor({
+      ...imageUploadOptions,
+      limits: { ...imageUploadOptions.limits, files: 5 },
+    }),
+  )
   async uploadMultiple(@UploadedFiles() files?: Express.Multer.File[]) {
-    if (!files?.length)
-      throw new BadRequestException('At least one image is required');
-    const uploaded = await this.uploadsService.uploadMultiple(files);
+    const images = pickUploadedImages(files);
+    if (!images.length) {
+      throw new BadRequestException(
+        'At least one image is required. Send them as images, gallery, or file.',
+      );
+    }
+    if (images.length > 5) {
+      throw new BadRequestException('Upload between 1 and 5 images');
+    }
+    const uploaded: { url: string }[] = [];
+    for (const file of images) {
+      const kind = this.requireImage(file);
+      uploaded.push(
+        await this.uploadsService.uploadSingle(
+          file,
+          kind === 'heic' ? 'jpg' : undefined,
+        ),
+      );
+    }
     return { urls: uploaded.map((image) => image.url) };
+  }
+
+  private requireImage(file: Express.Multer.File) {
+    const kind = detectImageKind(file.buffer);
+    if (!kind) {
+      throw new BadRequestException(
+        'File content is not a JPG, PNG, WebP, or HEIC image',
+      );
+    }
+    return kind;
   }
 
   @Post('document')

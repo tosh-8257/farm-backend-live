@@ -485,7 +485,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Throttle({
     default: {
-      limit: 6,
+      limit: 30,
       ttl: 60000,
     },
   })
@@ -504,6 +504,7 @@ export class AuthController {
       dto.refresh_token,
       req.ip || '',
       dto.device_id,
+      decoded.jti,
     );
   }
 

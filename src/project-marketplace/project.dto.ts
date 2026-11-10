@@ -37,6 +37,12 @@ export class ProjectInputDto {
   @IsOptional() @IsString() @MaxLength(255) location?: string;
   @IsOptional() @Matches(/^[A-Z]{2}$/) country?: string;
   @IsOptional() @IsString() @MaxLength(2000) banner_image?: string;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(8)
+  @IsString({ each: true })
+  @MaxLength(2000, { each: true })
+  gallery_images?: string[];
   @IsOptional() @IsNumber() @IsPositive() target_amount?: number;
   @IsOptional() @IsNumber() @IsPositive() minimum_investment?: number;
   @IsOptional()
@@ -93,6 +99,8 @@ export class ReviewActionDto {
   ])
   action!: string;
   @IsOptional() @IsString() @MaxLength(5000) notes?: string;
+  /** Alias for notes. The app sends the rejection reason under this name. */
+  @IsOptional() @IsString() @MaxLength(5000) reason?: string;
 }
 
 export class EligibilityDto {

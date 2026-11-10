@@ -19,6 +19,7 @@ import { UsersService } from './users.service';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Permissions } from '../common/decorators/permissions.decorator';
+import { Throttle } from '@nestjs/throttler';
 
 class UpdateProfileDto {
   @IsOptional()
@@ -116,6 +117,7 @@ export class UsersController {
   }
 
   @Get('notifications')
+  @Throttle({ default: { limit: 300, ttl: 60_000 } })
   notifications(@CurrentUser() u: any, @Query() q: any) {
     return this.svc.getNotifications(u.id, q);
   }

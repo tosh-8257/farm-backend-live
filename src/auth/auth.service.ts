@@ -1512,24 +1512,36 @@ export class AuthService implements OnModuleInit {
     rawRefreshToken: string,
     ip?: string,
     deviceId?: string,
+    jwtId?: string,
   ) {
-    // Match the presented token to its own active session. This prevents a
-    // refresh on one device from consuming another device's session.
-    const sessions = (await this.prisma.user_sessions.findMany({
-      where: {
-        user_id: userId,
-        AND: [
-          { OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }] },
-          { OR: [{ is_revoked: false }, { is_revoked: null }] },
-        ],
+    // Match the presented token to its own active session. Prefer the jti
+    // stored on the session so an app restart does not scan every session
+    // and time out (which the app treats as "sign in with SMS").
+    const active = {
+      user_id: userId,
+      AND: [
+        { OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }] },
+        { OR: [{ is_revoked: false }, { is_revoked: null }] },
+      ],
+    };
+    const include = {
+      users: {
+        include: { wallets: { take: 1 } },
       },
-      orderBy: { created_at: 'desc' },
-      include: {
-        users: {
-          include: { wallets: { take: 1 } },
-        },
-      },
-    })) as any[];
+    };
+    const sessions = jwtId
+      ? await this.prisma.user_sessions
+          .findFirst({
+            where: { ...active, jwt_id: jwtId },
+            include,
+          })
+          .then((row) => (row ? [row] : []))
+      : ((await this.prisma.user_sessions.findMany({
+          where: active,
+          orderBy: { created_at: 'desc' },
+          take: 20,
+          include,
+        })) as any[]);
 
     let session: any = null;
     for (const candidate of sessions) {
@@ -1551,25 +1563,34 @@ export class AuthService implements OnModuleInit {
     }
 
     // Check if this refresh token has already been used (token reuse detection)
-    if (
-      this.deviceBinding &&
-      !(await this.deviceBinding.isSessionDeviceValid(
-        session.trusted_device_id,
-        deviceId,
-      ))
-    ) {
-      await this.prisma.user_sessions.update({
-        where: { id: session.id },
-        data: { is_revoked: true },
-      });
-      await this.logSecurityEvent(
-        userId,
-        'REFRESH_DEVICE_MISMATCH',
-        'Device-bound refresh token used without its trusted device',
-        'high',
-        ip,
-      );
-      throw new UnauthorizedException('Session not valid on this device');
+    if (this.deviceBinding?.isEnabled() && session.trusted_device_id) {
+      if (!deviceId) {
+        throw new UnauthorizedException({
+          statusCode: 401,
+          code: 'DEVICE_ID_REQUIRED',
+          message:
+            'Send this device id with the refresh token. This does not require an SMS code.',
+        });
+      }
+      if (
+        !(await this.deviceBinding.isSessionDeviceValid(
+          session.trusted_device_id,
+          deviceId,
+        ))
+      ) {
+        await this.prisma.user_sessions.update({
+          where: { id: session.id },
+          data: { is_revoked: true },
+        });
+        await this.logSecurityEvent(
+          userId,
+          'REFRESH_DEVICE_MISMATCH',
+          'Device-bound refresh token used without its trusted device',
+          'high',
+          ip,
+        );
+        throw new UnauthorizedException('Session not valid on this device');
+      }
     }
 
     if (session.used_at) {
@@ -1692,6 +1713,7 @@ export class AuthService implements OnModuleInit {
           longLivedSessionsEnabled() &&
           this.deviceBinding?.isEnabled() === true,
         device_binding: this.deviceBinding?.isEnabled() === true,
+        refresh_requires_device_id: this.deviceBinding?.isEnabled() === true,
       },
     };
   }

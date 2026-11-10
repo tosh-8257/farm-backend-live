@@ -54,6 +54,7 @@ export class DistributionDto {
 }
 export class TokenNotesDto {
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+  @IsOptional() @IsString() @MaxLength(2000) reason?: string;
 }
 
 @ApiTags('Tokenization')
@@ -94,6 +95,10 @@ export class AdminTokenizationController {
   @Get() list(@Query('status') status?: string) {
     return this.svc.adminList(status);
   }
+  @Get('queue')
+  queue() {
+    return this.svc.adminList('requested');
+  }
   @Post(':id/approve') approve(
     @CurrentUser() u: any,
     @Param('id', ParseUUIDPipe) id: string,
@@ -106,7 +111,7 @@ export class AdminTokenizationController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: TokenNotesDto,
   ) {
-    return this.svc.reject(u.id, id, dto.notes ?? '');
+    return this.svc.reject(u.id, id, dto.notes || dto.reason || '');
   }
 }
 

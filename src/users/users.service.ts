@@ -3,6 +3,8 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ServiceUnavailableException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { CacheService } from '../common/cache/cache.service';
@@ -11,6 +13,8 @@ import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private prisma: PrismaService,
     private cache: CacheService,
@@ -203,16 +207,34 @@ export class UsersService {
       query.page,
       query.limit,
     );
-    const [items, total] = await Promise.all([
-      this.prisma.notifications.findMany({
-        where: { user_id: userId },
-        skip,
-        take,
-        orderBy: { created_at: 'desc' },
-      }),
-      this.prisma.notifications.count({ where: { user_id: userId } }),
-    ]);
-    return { data: items, meta: paginate(total, page, limit) };
+    try {
+      const [items, total] = await Promise.all([
+        this.prisma.notifications.findMany({
+          where: { user_id: userId },
+          skip,
+          take,
+          orderBy: { created_at: 'desc' },
+          select: {
+            id: true,
+            type: true,
+            title: true,
+            body: true,
+            metadata: true,
+            is_read: true,
+            created_at: true,
+          },
+        }),
+        this.prisma.notifications.count({ where: { user_id: userId } }),
+      ]);
+      return { data: items, meta: paginate(total, page, limit) };
+    } catch (error) {
+      this.logger.error(
+        `Notification list failed for ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Could not load notifications. Pull to refresh.',
+      );
+    }
   }
 
   async markNotificationRead(userId: string, notifId: string) {

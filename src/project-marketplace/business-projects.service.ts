@@ -2,7 +2,10 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
+import { notifyProjectOwner } from './project-owner-notify';
 import { PrismaService } from '../database/prisma.service';
 import { BusinessAccessService } from '../business-ops/business-access.service';
 import {
@@ -25,6 +28,7 @@ export interface ProjectInput {
   location?: string;
   country?: string;
   banner_image?: string;
+  gallery_images?: string[];
   target_amount?: number;
   minimum_investment?: number;
   maximum_investment?: number | null;
@@ -58,6 +62,23 @@ export function cleanProjectInput(dto: ProjectInput) {
       throw new BadRequestException(`${k} must be text`);
     if (v && v.length > max) throw new BadRequestException(`${k} is too long`);
     d[k] = v?.trim() || null;
+  }
+  if (d.banner_image && !/^https:\/\/\S+$/.test(d.banner_image)) {
+    throw new BadRequestException(
+      'banner_image must be an https URL. Upload the cover photo first.',
+    );
+  }
+  if (dto.gallery_images !== undefined) {
+    if (!Array.isArray(dto.gallery_images) || dto.gallery_images.length > 8) {
+      throw new BadRequestException('gallery_images accepts at most 8 URLs');
+    }
+    const urls = dto.gallery_images.map((url) => String(url ?? '').trim());
+    if (urls.some((url) => !/^https:\/\/\S+$/.test(url) || url.length > 2000)) {
+      throw new BadRequestException(
+        'Each gallery image must be an https URL. Upload the photos first.',
+      );
+    }
+    d.gallery_images = urls;
   }
   if (dto.sector !== undefined) {
     if (!(SECTORS as readonly string[]).includes(dto.sector))
@@ -115,6 +136,7 @@ export class BusinessProjectsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly access: BusinessAccessService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   private async own(
@@ -386,6 +408,13 @@ export class BusinessProjectsService {
         to_status: 'submitted',
       },
     });
+    await notifyProjectOwner(
+      this.prisma,
+      this.notifications,
+      p,
+      'Project submitted for review',
+      `${p.project_name} is in the review queue. It appears on the marketplace only after it is approved and listed.`,
+    );
     return { data: { id, status: 'submitted' } };
   }
 

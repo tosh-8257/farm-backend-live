@@ -13,7 +13,9 @@ import { ADMIN_TRANSITIONS, RELEASABLE } from './project-rules';
 import { fundsFlowEnabled } from './funds-flow-rules';
 import { presentProject } from './marketplace.service';
 import { FeesService } from '../fees/fees.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { TokenizationService } from '../tokenization/tokenization.service';
+import { notifyProjectOwner } from './project-owner-notify';
 import { TokenDeliveryService } from '../tokenization/token-delivery.service';
 import {
   chargeConsolidationInTx,
@@ -32,6 +34,7 @@ export class ProjectReviewService {
     @Optional() private readonly fees?: FeesService,
     @Optional() private readonly tokens?: TokenizationService,
     @Optional() private readonly delivery?: TokenDeliveryService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /** Round close: take the consolidation fund fee once (no-op if already taken). */
@@ -167,9 +170,69 @@ export class ProjectReviewService {
       tokens = (await this.delivery?.unwindForCancel(id)) ?? null;
       refunds = await this.refundAll(adminId, id);
     }
+    await this.notifyOwner(p, action, notes);
     return {
       data: { id, status: rule.to, refunds, consolidation_fee, tokens },
     };
+  }
+
+  private async notifyOwner(
+    project: {
+      id: string;
+      project_name?: string | null;
+      created_by?: string | null;
+      business_id?: string | null;
+    },
+    action: string,
+    notes?: string,
+  ) {
+    const name = project.project_name || 'Your project';
+    const reason = notes?.trim();
+    const copy: Record<string, { title: string; body: string }> = {
+      approve: {
+        title: 'Project approved',
+        body: `${name} was approved. It goes on the marketplace when an admin lists it.`,
+      },
+      reject: {
+        title: 'Project not approved',
+        body: reason
+          ? `${name} was rejected. ${reason}`
+          : `${name} was rejected.`,
+      },
+      request_info: {
+        title: 'More information needed',
+        body: reason
+          ? `${name} needs more information. ${reason}`
+          : `${name} needs more information before it can be reviewed.`,
+      },
+      list: {
+        title: 'Project is on the marketplace',
+        body: `${name} is now listed. People can invest in it.`,
+      },
+      unlist: {
+        title: 'Project removed from the marketplace',
+        body: `${name} is no longer listed.`,
+      },
+      close: {
+        title: 'Project closed',
+        body: `${name} is closed.`,
+      },
+      cancel: {
+        title: 'Project cancelled',
+        body: reason
+          ? `${name} was cancelled. ${reason}`
+          : `${name} was cancelled.`,
+      },
+    };
+    const message = copy[action];
+    if (!message) return;
+    await notifyProjectOwner(
+      this.prisma,
+      this.notifications,
+      project,
+      message.title,
+      message.body,
+    );
   }
 
   /**

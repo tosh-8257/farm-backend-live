@@ -18,8 +18,11 @@ type UploadedImage = { url: string; public_id: string };
 export class UploadsService {
   private readonly logger = new Logger(UploadsService.name);
 
-  async uploadSingle(file: Express.Multer.File): Promise<UploadedImage> {
-    return this.uploadToCloudinary(file, 'image', 'farmapp');
+  async uploadSingle(
+    file: Express.Multer.File,
+    format?: 'jpg',
+  ): Promise<UploadedImage> {
+    return this.uploadToCloudinary(file, 'image', 'farmapp', format);
   }
 
   /** Business documents: PDFs are stored as raw files, images as images. */
@@ -38,6 +41,7 @@ export class UploadsService {
     file: Express.Multer.File,
     resourceType: 'image' | 'raw',
     folder: string,
+    format?: 'jpg',
   ): Promise<UploadedImage> {
     if (!file?.buffer?.length) {
       throw new BadRequestException('Uploaded image is empty');
@@ -46,7 +50,11 @@ export class UploadsService {
       configureCloudinary();
       const result = await new Promise<UploadApiResponse>((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
-          { folder, resource_type: resourceType },
+          {
+            folder,
+            resource_type: resourceType,
+            ...(format ? { format } : {}),
+          },
           (error, response) => {
             if (error)
               return reject(new Error(error.message || 'Upload failed'));
@@ -63,12 +71,16 @@ export class UploadsService {
       }
       return { url: result.secure_url, public_id: result.public_id };
     } catch (error) {
+      const detail = cloudinaryErrorMessage(error);
       this.logger.error(
-        `Cloudinary image upload failed: ${cloudinaryErrorMessage(error)}`,
+        `Cloudinary image upload failed: ${detail}`,
         error instanceof Error ? error.stack : String(error),
       );
+      if (detail.startsWith('Missing Cloudinary configuration')) {
+        throw new ServiceUnavailableException(detail);
+      }
       throw new ServiceUnavailableException(
-        'Could not upload image. Please try again.',
+        `Could not store the file. ${detail}`.slice(0, 300),
       );
     }
   }

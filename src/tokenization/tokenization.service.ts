@@ -10,6 +10,8 @@ import { PrismaService } from '../database/prisma.service';
 import { BusinessAccessService } from '../business-ops/business-access.service';
 import { AlgorandAsaClient } from './algorand-asa.client';
 import { algorandConfig, explorerAsset, explorerTx } from './algorand-config';
+import { NotificationsService } from '../notifications/notifications.service';
+import { notifyProjectOwner } from '../project-marketplace/project-owner-notify';
 import { TokenBuybackService, buybackEnabled } from './token-buyback.service';
 import { ON_INVEST_REQUESTABLE, onInvestConfig, unitsFor } from './on-invest';
 
@@ -38,6 +40,7 @@ export class TokenizationService {
     private readonly access: BusinessAccessService,
     private readonly chain: AlgorandAsaClient,
     @Optional() private readonly buyback?: TokenBuybackService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   status() {
@@ -166,6 +169,11 @@ export class TokenizationService {
       : await this.prisma.project_tokens.create({
           data: { ...data, project_id: projectId },
         });
+    await this.tellOwner(
+      projectId,
+      'Tokenization submitted',
+      `${p.project_name} was submitted for tokenization review.`,
+    );
     return { data: shape(t) };
   }
 
@@ -191,7 +199,39 @@ export class TokenizationService {
       data: { status: 'rejected', notes: notes.trim(), reviewed_by: adminId },
     });
     if (!r.count) throw new BadRequestException('Request is not pending');
+    const token = await this.prisma.project_tokens.findUnique({
+      where: { id: tokenId },
+      select: { project_id: true },
+    });
+    if (token) {
+      await this.tellOwner(
+        token.project_id,
+        'Tokenization not approved',
+        notes.trim(),
+      );
+    }
     return { data: { id: tokenId, status: 'rejected' } };
+  }
+
+  private async tellOwner(projectId: string, title: string, body: string) {
+    if (!this.notifications) return;
+    const project = await this.prisma.investment_projects.findUnique({
+      where: { id: projectId },
+      select: {
+        id: true,
+        project_name: true,
+        created_by: true,
+        business_id: true,
+      },
+    });
+    if (!project) return;
+    await notifyProjectOwner(
+      this.prisma,
+      this.notifications,
+      project,
+      title,
+      body,
+    );
   }
 
   /**
@@ -293,6 +333,11 @@ export class TokenizationService {
           },
         });
       });
+      await this.tellOwner(
+        t.project_id,
+        'Tokenization approved',
+        `${t.project.project_name} was approved for tokenization.`,
+      );
       return {
         data: shape(
           await this.prisma.project_tokens.findUnique({
@@ -401,6 +446,11 @@ export class TokenizationService {
           },
         });
       });
+      await this.tellOwner(
+        t.project_id,
+        'Tokenization approved',
+        `${t.project.project_name} was approved for tokenization.`,
+      );
       return {
         data: shape(
           await this.prisma.project_tokens.findUnique({

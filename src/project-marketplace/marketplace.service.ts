@@ -19,12 +19,15 @@ import { paginate, paginationParams } from '../common/utils/pagination.util';
 import {
   ELIGIBILITY_RULE,
   INVESTABLE,
-  MARKET_VISIBLE,
   RISK_DISCLOSURE_TEXT,
   RISK_DISCLOSURE_VERSION,
   SECTORS,
   stripReturns,
 } from './project-rules';
+import {
+  marketplaceListWhere,
+  projectIsPublic,
+} from './marketplace-visibility';
 
 const n = (v: any) => (v == null ? null : Number(v));
 
@@ -80,13 +83,7 @@ export class MarketplaceService {
     limit?: any;
   }) {
     const { skip, take, page, limit } = paginationParams(q.page, q.limit);
-    const status =
-      q.status === 'all'
-        ? MARKET_VISIBLE
-        : q.status === 'funded'
-          ? ['funded']
-          : INVESTABLE;
-    const where: any = { status: { in: status } };
+    const where: any = marketplaceListWhere(q.status);
     if (q.sector && q.sector !== 'all') where.sector = q.sector;
     if (q.search)
       where.OR = [
@@ -157,7 +154,7 @@ export class MarketplaceService {
         },
       },
     });
-    if (!p || !MARKET_VISIBLE.includes(p.status ?? ''))
+    if (!p || !projectIsPublic(p))
       throw new NotFoundException('Project not found');
     const isInvestor = userId
       ? (await this.prisma.user_investments.count({
