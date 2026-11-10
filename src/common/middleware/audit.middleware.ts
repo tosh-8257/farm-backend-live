@@ -63,22 +63,45 @@ export class AuditMiddleware implements NestMiddleware {
 
   // Strip sensitive fields before logging
   private sanitize(body: any): any {
-    if (!body || typeof body !== 'object') return body;
-    const REDACTED = [
-      'password',
-      'pin',
-      'confirm_pin',
-      'otp_code',
-      'refresh_token',
-      'access_token',
-      'private_key',
-      'mnemonic',
-      'secret',
-    ];
-    const clean = { ...body };
-    for (const key of REDACTED) {
-      if (key in clean) clean[key] = '[REDACTED]';
-    }
-    return clean;
+    return redactAuditBody(body);
   }
+}
+
+const SENSITIVE_PARTS = new Set([
+  'pin',
+  'password',
+  'otp',
+  'token',
+  'secret',
+  'mnemonic',
+  'fingerprint',
+  'authorization',
+  'cookie',
+  'pwd',
+]);
+
+function sensitiveKey(key: string) {
+  const parts = key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  return parts.some((part) => SENSITIVE_PARTS.has(part));
+}
+
+/** Redact credentials before they are written to audit_logs. */
+export function redactAuditBody(body: any): any {
+  if (!body || typeof body !== 'object') return body;
+  if (Array.isArray(body)) return body.map((item) => redactAuditBody(item));
+  const clean: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    if (sensitiveKey(key)) {
+      clean[key] = '[REDACTED]';
+    } else if (value && typeof value === 'object') {
+      clean[key] = redactAuditBody(value);
+    } else {
+      clean[key] = value;
+    }
+  }
+  return clean;
 }

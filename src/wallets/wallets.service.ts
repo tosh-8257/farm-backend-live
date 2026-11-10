@@ -275,10 +275,23 @@ export class WalletsService {
       if (!recvWallet)
         throw new NotFoundException('Recipient wallet not found');
 
-      const updatedSenderWallet = await tx.wallets.update({
-        where: { id: senderWallet.id },
-        data: { balance: { decrement: totalOut } },
-      });
+      // Conditional debit so two concurrent sends cannot both pass the
+      // in-memory balance check and drive the wallet negative.
+      const debited = await tx.$executeRaw`
+        UPDATE wallets
+           SET balance = COALESCE(balance, 0) - ${totalOut}::numeric
+         WHERE id = ${senderWallet.id}::uuid
+           AND COALESCE(balance, 0) - COALESCE(locked_balance, 0) >= ${totalOut}::numeric
+           AND COALESCE(is_frozen, false) = false`;
+      if (Number(debited) !== 1) {
+        throw new BadRequestException(
+          'Insufficient balance. The transfer was not sent.',
+        );
+      }
+      const updatedSenderWallet = {
+        ...senderWallet,
+        balance: Number(senderWallet.balance) - totalOut,
+      };
       const updatedReceiverWallet = await tx.wallets.update({
         where: { id: receiverWalletId },
         data: { balance: { increment: receiverCredit } },

@@ -11,8 +11,9 @@ import {
   Delete,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { IsBoolean, IsString, IsOptional } from 'class-validator';
+import { IsBoolean, IsString, IsOptional, Length } from 'class-validator';
 import { SecurityService } from './security.service';
+import { AuthService } from '../auth/auth.service';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -29,6 +30,11 @@ class UpdateBiometricsDto {
   @IsOptional()
   @IsString()
   biometricType?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(4, 6)
+  pin?: string;
 }
 
 class VerifyDeviceDto {
@@ -43,13 +49,29 @@ class CreateBiometricsDto {
   @IsOptional()
   @IsString()
   biometricType?: string;
+
+  @IsString()
+  @Length(4, 6)
+  pin!: string;
 }
 
 @ApiTags('Security')
 @Controller({ path: 'security', version: '1' })
 export class SecurityController {
   private readonly logger = new Logger(SecurityController.name);
-  constructor(private readonly svc: SecurityService) {}
+  constructor(
+    private readonly svc: SecurityService,
+    private readonly auth: AuthService,
+  ) {}
+
+  private async confirmPin(userId: string, pin?: string) {
+    if (!pin) {
+      throw new BadRequestException(
+        'Enter your PIN to turn on biometrics for payments',
+      );
+    }
+    await this.auth.verifyPin(userId, pin);
+  }
 
   @Permissions('security:read')
   @Get('settings')
@@ -78,6 +100,7 @@ export class SecurityController {
           'deviceFingerprint is required when enabling biometrics',
         );
       }
+      await this.confirmPin(user.id, dto.pin);
       return this.svc.enableBiometrics(
         user.id,
         dto.deviceFingerprint,
@@ -115,6 +138,7 @@ export class SecurityController {
     if (!dto.deviceFingerprint) {
       throw new BadRequestException('deviceFingerprint is required');
     }
+    await this.confirmPin(user.id, dto.pin);
 
     return this.svc.enableBiometrics(
       user.id,

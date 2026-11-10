@@ -2042,20 +2042,20 @@ export class AuthService implements OnModuleInit {
 
     const failedPinAttempts = user.failed_pin_attempts ?? 0;
 
-    if (failedPinAttempts >= MAX_PIN_ATTEMPTS)
+    // Take one attempt before comparing. Parallel guesses serialize on this
+    // row, so a burst cannot try more than MAX_PIN_ATTEMPTS PINs.
+    const claimed = await this.prisma.$executeRaw`
+      UPDATE users
+         SET failed_pin_attempts = COALESCE(failed_pin_attempts, 0) + 1
+       WHERE id = ${userId}::uuid
+         AND COALESCE(failed_pin_attempts, 0) < ${MAX_PIN_ATTEMPTS}`;
+    if (Number(claimed) !== 1) {
       throw new ForbiddenException('PIN locked. Contact support.');
+    }
 
-    // Compare the raw PIN to the stored bcrypt hash.
-    // Historically some code concatenated the userId to the PIN before hashing,
-    // but setPin/changePin/hash generation use the PIN alone. Use the raw PIN
-    // so comparisons are consistent with how PINs are stored.
     const valid = await bcrypt.compare(pin, user.pin_hash);
     if (!valid) {
-      await this.prisma.users.update({
-        where: { id: userId },
-        data: { failed_pin_attempts: { increment: 1 } },
-      });
-      const left = MAX_PIN_ATTEMPTS - failedPinAttempts - 1;
+      const left = Math.max(0, MAX_PIN_ATTEMPTS - failedPinAttempts - 1);
       throw new UnauthorizedException(
         `Incorrect PIN. ${left} attempt(s) remaining.`,
       );
@@ -2085,12 +2085,8 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException('No PIN found');
     }
 
-    // Security fix: Don't concatenate userId with PIN
-    const validOldPin = await bcrypt.compare(dto.old_pin, user.pin_hash);
-
-    if (!validOldPin) {
-      throw new UnauthorizedException('Old PIN is incorrect');
-    }
+    // Same locked counter as sends. A raw compare here would bypass the lock.
+    await this.verifyPin(userId, dto.old_pin);
 
     const rounds = Number(this.cfg.get('BCRYPT_ROUNDS')) || 12;
 
